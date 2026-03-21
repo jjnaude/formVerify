@@ -28,7 +28,7 @@ export default defineConfig({
       },
       workbox: {
         globPatterns: ['**/*.{js,css,html,wasm,png}'],
-        maximumFileSizeToCacheInBytes: 10 * 1024 * 1024, // 10MB for OpenCV WASM
+        maximumFileSizeToCacheInBytes: 15 * 1024 * 1024, // 15MB for OpenCV WASM
       },
     }),
   ],

@@ -1,8 +1,9 @@
 import { LitElement, html, css } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import './camera-capture.js';
+import './image-processor.js';
 
-type AppView = 'home' | 'camera';
+type AppView = 'home' | 'camera' | 'processing';
 
 @customElement('app-shell')
 export class AppShell extends LitElement {
@@ -69,7 +70,8 @@ export class AppShell extends LitElement {
       line-height: 1.6;
     }
 
-    camera-capture {
+    camera-capture,
+    image-processor {
       flex: 1;
       width: 100%;
     }
@@ -98,6 +100,7 @@ export class AppShell extends LitElement {
 
   @state() private _view: AppView = 'home';
   @state() private _toast = '';
+  @state() private _captureId = 0;
 
   private _showCamera(): void {
     this._view = 'camera';
@@ -108,7 +111,12 @@ export class AppShell extends LitElement {
   }
 
   private _onCaptureSaved(e: CustomEvent<{ id: number }>): void {
-    this._toast = `Image saved (ID: ${e.detail.id})`;
+    this._captureId = e.detail.id;
+    this._view = 'processing';
+  }
+
+  private _onProcessingComplete(): void {
+    this._toast = 'Form processed successfully';
     this._view = 'home';
     setTimeout(() => {
       this._toast = '';
@@ -126,6 +134,7 @@ export class AppShell extends LitElement {
 
       ${this._view === 'home' ? this._renderHome() : ''}
       ${this._view === 'camera' ? this._renderCamera() : ''}
+      ${this._view === 'processing' ? this._renderProcessing() : ''}
       ${this._toast ? html`<div class="toast">${this._toast}</div>` : ''}
     `;
   }
@@ -147,6 +156,15 @@ export class AppShell extends LitElement {
   private _renderCamera() {
     return html`
       <camera-capture @capture-saved=${this._onCaptureSaved}></camera-capture>
+    `;
+  }
+
+  private _renderProcessing() {
+    return html`
+      <image-processor
+        .captureId=${this._captureId}
+        @processing-complete=${this._onProcessingComplete}
+      ></image-processor>
     `;
   }
 }

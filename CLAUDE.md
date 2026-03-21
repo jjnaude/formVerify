@@ -27,7 +27,9 @@ PWA to verify handwritten numerical fields on healthcare waste manifest forms. C
 
 **Phase 1 (Camera Capture) — COMPLETE.** See `doc/phase1-camera.md`.
 
-**Phase 2 (ArUco Detection) — NEXT.** See `doc/architecture.md`.
+**Phase 2 (ArUco Detection) — COMPLETE.** See `doc/phase2-aruco.md`.
+
+**Phase 3 (ROI Extraction + OCR) — NEXT.** See `doc/architecture.md`.
 
 ## Implementation Plan
 
@@ -37,8 +39,8 @@ Full phased plan is in `doc/architecture.md`. Summary:
 |-------|-------|--------|
 | 0 | Project scaffolding, devcontainer | **Complete** |
 | 1 | Camera capture component | **Complete** |
-| 2 | ArUco detection + perspective correction | Next |
-| 3 | ROI extraction + OCR | Pending |
+| 2 | ArUco detection + perspective correction | **Complete** |
+| 3 | ROI extraction + OCR | Next |
 | 4 | Verification UI | Pending |
 | 5 | Export + polish | Pending |
 | 6 | Custom OCR model + barcode support | Future |
