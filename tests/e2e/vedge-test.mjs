@@ -66,17 +66,33 @@ const rowBounds = await page.evaluate(() => {
 });
 console.log('Row boundary clusters:', rowBounds);
 
-// Match to expected positions
+// Find 4 boundaries with equal-spacing constraint
 const eH = Math.round(0.0308 * H);
-const expectedBounds = [
-  Math.round(0.1485*H - eH/2), Math.round(0.1485*H + eH/2),
-  Math.round(0.1822*H + eH/2), Math.round(0.2145*H + eH/2),
+const tableClusters = rowBounds.filter(y => y > 150 && y < 500);
+let bestMatch = null, bestScore = Infinity;
+for (let a = 0; a < tableClusters.length; a++) {
+  for (let b = a+1; b < tableClusters.length; b++) {
+    const h0 = tableClusters[b]-tableClusters[a]; if (h0<40||h0>80) continue;
+    for (let c = b+1; c < tableClusters.length; c++) {
+      const h1 = tableClusters[c]-tableClusters[b]; if (h1<40||h1>80) continue;
+      for (let d = c+1; d < tableClusters.length; d++) {
+        const h2 = tableClusters[d]-tableClusters[c]; if (h2<40||h2>80) continue;
+        const avgH = (h0+h1+h2)/3;
+        const heightVar = Math.abs(h0-avgH)+Math.abs(h1-avgH)+Math.abs(h2-avgH);
+        const centerY = (tableClusters[a]+tableClusters[d])/2;
+        const expectedCenter = (0.1485+0.2145)/2 * H + eH/2;
+        const score = heightVar + Math.abs(centerY-expectedCenter)*0.5;
+        if (score < bestScore) { bestScore=score; bestMatch=[tableClusters[a],tableClusters[b],tableClusters[c],tableClusters[d]]; }
+      }
+    }
+  }
+}
+const matchedBounds = bestMatch || [
+  Math.round(0.1485*H-eH/2), Math.round(0.1485*H+eH/2),
+  Math.round(0.1822*H+eH/2), Math.round(0.2145*H+eH/2),
 ];
-const matchedBounds = expectedBounds.map(ey => {
-  const near = rowBounds.filter(y => Math.abs(y-ey)<30);
-  return near.length > 0 ? near.reduce((a,b) => Math.abs(a-ey)<Math.abs(b-ey)?a:b) : ey;
-});
-console.log('Matched row bounds:', matchedBounds);
+console.log('Matched row bounds:', matchedBounds, '→ heights:',
+  [matchedBounds[1]-matchedBounds[0], matchedBounds[2]-matchedBounds[1], matchedBounds[3]-matchedBounds[2]]);
 
 // Step 3: For each row, compute vertical edge profile
 const rowNames = ['received', 'gross_kg', 'nett_kg'];
