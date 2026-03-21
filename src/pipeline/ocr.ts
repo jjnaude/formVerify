@@ -5,8 +5,11 @@
  */
 
 import Tesseract from 'tesseract.js';
-import { classifyDigit, initClassifier } from './digit-classifier.js';
+import { classifyDigitWithCV, initClassifier } from './digit-classifier.js';
 import type { ExtractedROI } from './roi-extractor.js';
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type CV = any;
 
 export interface OCRResult {
   cellId: string;
@@ -37,14 +40,15 @@ async function getTesseractWorker(): Promise<Tesseract.Worker> {
 /**
  * Run recognition on a batch of extracted ROIs.
  *
- * Uses ONNX MNIST classifier for digit boxes (cellId contains "_d"),
- * falls back to Tesseract for other fields (e.g. tracking number).
+ * @param cv - OpenCV.js module (needed for digit preprocessing)
+ * @param rois - Extracted ROIs
+ * @param onProgress - Progress callback
  */
 export async function recognizeCells(
+  cv: CV,
   rois: ExtractedROI[],
   onProgress?: (completed: number, total: number) => void,
 ): Promise<OCRResult[]> {
-  // Split into digit boxes and other fields
   const digitROIs = rois.filter((r) => r.cell.id.includes('_d'));
   const otherROIs = rois.filter((r) => !r.cell.id.includes('_d'));
 
@@ -52,14 +56,17 @@ export async function recognizeCells(
   let completed = 0;
   const total = rois.length;
 
-  // Init ONNX classifier if we have digit boxes
   if (digitROIs.length > 0) {
     await initClassifier();
   }
 
-  // Classify digit boxes with ONNX
+  // Classify digit boxes with ONNX + OpenCV preprocessing
   for (const roi of digitROIs) {
-    const { digit, confidence } = await classifyDigit(roi.preprocessedData);
+    // Convert raw ImageData to cv.Mat for OpenCV-based preprocessing
+    const mat = cv.matFromImageData(roi.imageData);
+    const { digit, confidence } = await classifyDigitWithCV(cv, mat);
+    mat.delete();
+
     results.push({
       cellId: roi.cell.id,
       row: roi.cell.row,

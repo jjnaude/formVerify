@@ -294,7 +294,7 @@ export class ImageProcessor extends LitElement {
 
           // Run OCR
           this._processState = 'ocr';
-          this._ocrResults = await recognizeCells(rois, (done, total) => {
+          this._ocrResults = await recognizeCells(cv, rois, (done, total) => {
             this._ocrProgress = `${done}/${total} cells`;
           });
 
