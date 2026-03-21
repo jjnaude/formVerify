@@ -26,6 +26,13 @@ export class AppShell extends LitElement {
       gap: 12px;
     }
 
+    .build-tag {
+      margin-left: auto;
+      font-size: 0.65rem;
+      opacity: 0.7;
+      font-weight: normal;
+    }
+
     .back-btn {
       background: none;
       border: none;
@@ -130,6 +137,7 @@ export class AppShell extends LitElement {
           ? html`<button class="back-btn" @click=${this._goHome} aria-label="Back">&larr;</button>`
           : ''}
         formVerify
+        <span class="build-tag">${new Date(__BUILD_TIME__).toLocaleString()}</span>
       </header>
 
       ${this._view === 'home' ? this._renderHome() : ''}
