@@ -1,9 +1,9 @@
-import { LitElement, html, css } from 'lit';
+import { LitElement, html, css, nothing } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 import { loadOpenCV } from '../utils/opencv-loader.js';
 import { detectMarkers, type DetectedMarker } from '../pipeline/aruco-detector.js';
 import { correctPerspective, matToBlob } from '../pipeline/perspective.js';
-import { extractROIs } from '../pipeline/roi-extractor.js';
+import { extractROIs, type ExtractedROI } from '../pipeline/roi-extractor.js';
 import { recognizeCells, type OCRResult } from '../pipeline/ocr.js';
 import { MANIFEST_SCHEMA } from '../models/form-schema.js';
 import { getCapture, saveCapture, updateCaptureStatus } from '../utils/db.js';
@@ -105,6 +105,10 @@ export class ImageProcessor extends LitElement {
       background: #f4f4f4;
     }
 
+    .ocr-table td.clickable {
+      cursor: pointer;
+    }
+
     .ocr-table td.has-value {
       background: #e8f5e9;
       font-weight: bold;
@@ -114,9 +118,43 @@ export class ImageProcessor extends LitElement {
       background: #fff3e0;
     }
 
+    .ocr-table td.selected {
+      outline: 2px solid #1a73e8;
+      outline-offset: -2px;
+    }
+
     .table-wrapper {
       width: 100%;
       overflow-x: auto;
+    }
+
+    .cell-preview {
+      width: 100%;
+      background: #fafafa;
+      border: 1px solid #ddd;
+      border-radius: 4px;
+      padding: 12px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .cell-preview-header {
+      font-size: 0.85rem;
+      font-weight: 500;
+      color: #333;
+    }
+
+    .cell-preview-img {
+      image-rendering: pixelated;
+      border: 1px solid #ccc;
+      background: white;
+    }
+
+    .cell-preview-details {
+      font-size: 0.8rem;
+      color: #666;
     }
 
     .controls {
@@ -137,11 +175,6 @@ export class ImageProcessor extends LitElement {
       background: #1a73e8;
       color: white;
     }
-
-    .progress {
-      font-size: 0.85rem;
-      color: #1a73e8;
-    }
   `;
 
   @property({ type: Number }) captureId = 0;
@@ -152,6 +185,10 @@ export class ImageProcessor extends LitElement {
   @state() private _resultUrl = '';
   @state() private _ocrResults: OCRResult[] = [];
   @state() private _ocrProgress = '';
+  @state() private _selectedCellId = '';
+
+  /** Map of cellId → data URL for the cropped ROI image */
+  private _roiImages = new Map<string, string>();
 
   connectedCallback(): void {
     super.connectedCallback();
@@ -163,6 +200,15 @@ export class ImageProcessor extends LitElement {
     if (this._resultUrl) {
       URL.revokeObjectURL(this._resultUrl);
     }
+  }
+
+  private _roiToDataUrl(roi: ExtractedROI): string {
+    const canvas = document.createElement('canvas');
+    canvas.width = roi.imageData.width;
+    canvas.height = roi.imageData.height;
+    const ctx = canvas.getContext('2d')!;
+    ctx.putImageData(roi.imageData, 0, 0);
+    return canvas.toDataURL('image/png');
   }
 
   private async _process(): Promise<void> {
@@ -225,6 +271,11 @@ export class ImageProcessor extends LitElement {
           const allCells = [MANIFEST_SCHEMA.tracking, ...MANIFEST_SCHEMA.table];
           const rois = extractROIs(cv, result.corrected, allCells);
 
+          // Store ROI images for preview
+          for (const roi of rois) {
+            this._roiImages.set(roi.cell.id, this._roiToDataUrl(roi));
+          }
+
           // Run OCR
           this._processState = 'ocr';
           this._ocrResults = await recognizeCells(rois, (done, total) => {
@@ -252,6 +303,10 @@ export class ImageProcessor extends LitElement {
         composed: true,
       }),
     );
+  }
+
+  private _selectCell(cellId: string): void {
+    this._selectedCellId = this._selectedCellId === cellId ? '' : cellId;
   }
 
   render() {
@@ -285,11 +340,40 @@ export class ImageProcessor extends LitElement {
     `;
   }
 
+  private _renderCellPreview() {
+    if (!this._selectedCellId) return nothing;
+
+    const imgUrl = this._roiImages.get(this._selectedCellId);
+    if (!imgUrl) return nothing;
+
+    const result = this._ocrResults.find((r) => r.cellId === this._selectedCellId);
+    const cell = [...MANIFEST_SCHEMA.table, MANIFEST_SCHEMA.tracking].find(
+      (c) => c.id === this._selectedCellId,
+    );
+
+    return html`
+      <div class="cell-preview">
+        <div class="cell-preview-header">
+          ${cell?.col || this._selectedCellId}
+          ${cell?.row && cell.row !== 'tracking' ? ` (${cell.row})` : ''}
+        </div>
+        <img
+          class="cell-preview-img"
+          src=${imgUrl}
+          alt="Cropped cell"
+          style="max-width: 100%; height: auto; min-height: 40px;"
+        />
+        <div class="cell-preview-details">
+          OCR: "${result?.text || ''}" | Confidence: ${result?.confidence?.toFixed(0) ?? '?'}%
+        </div>
+      </div>
+    `;
+  }
+
   private _renderResults() {
     const trackingResult = this._ocrResults.find((r) => r.cellId === 'tracking_no');
     const tableResults = this._ocrResults.filter((r) => r.cellId !== 'tracking_no');
 
-    // Group by row
     const rows = ['received', 'gross_kg', 'nett_kg'];
     const columns = MANIFEST_SCHEMA.table
       .filter((c) => c.row === 'received')
@@ -299,10 +383,17 @@ export class ImageProcessor extends LitElement {
       <div class="results">
         <img class="result-img" src=${this._resultUrl} alt="Corrected form" />
 
-        <div class="info-bar">
+        <div
+          class="info-bar"
+          style="cursor: pointer"
+          @click=${() => this._selectCell('tracking_no')}
+        >
           Markers: ${this._markers.length}/4 |
           Tracking No: <strong>${trackingResult?.text || '—'}</strong>
+          <span style="float:right; font-size:0.75rem; color:#999">tap to preview</span>
         </div>
+
+        ${this._renderCellPreview()}
 
         <div class="table-wrapper">
           <table class="ocr-table">
@@ -327,13 +418,19 @@ export class ImageProcessor extends LitElement {
                       const r = tableResults.find(
                         (r) => r.row === row && r.col === col,
                       );
+                      const cellSchema = MANIFEST_SCHEMA.table.find(
+                        (c) => c.row === row && c.col === col,
+                      );
+                      const cellId = cellSchema?.id || '';
                       const val = r?.text || '';
-                      const cls = val
-                        ? r!.confidence < 50
-                          ? 'has-value low-conf'
-                          : 'has-value'
-                        : '';
-                      return html`<td class=${cls}>${val || '—'}</td>`;
+                      const isSelected = cellId === this._selectedCellId;
+                      let cls = 'clickable';
+                      if (val) cls += r!.confidence < 50 ? ' has-value low-conf' : ' has-value';
+                      if (isSelected) cls += ' selected';
+                      return html`<td
+                        class=${cls}
+                        @click=${() => this._selectCell(cellId)}
+                      >${val || '—'}</td>`;
                     })}
                   </tr>
                 `;
