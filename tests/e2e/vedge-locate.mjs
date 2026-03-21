@@ -120,7 +120,7 @@ const matchedBounds = bestMatch || [
 console.log('Matched bounds:', matchedBounds, '→ row heights:',
   [matchedBounds[1]-matchedBounds[0], matchedBounds[2]-matchedBounds[1], matchedBounds[3]-matchedBounds[2]]);
 
-// For each row: get vertical edge peaks, then match to expected box edges
+// For each row: get vertical edge profile, then use PLL-style box finding
 const allBoxes = []; // {left, right, top, bottom, expected}
 let digitCounter = 0;
 const nextDigit = () => (digitCounter++) % 10;
@@ -130,69 +130,83 @@ for (let ri = 0; ri < 3; ri++) {
   const isKG = ri > 0;
   const numDigits = isKG ? 4 : 3;
 
-  // Get peaks for this row
-  const peaks = await page.evaluate(({top, bot}) => {
+  // Get the blurred edge profile (not just peaks)
+  const edgeProfile = await page.evaluate(({top, bot}) => {
     const cv = window.cv; const gray = window.__gray;
     const rowH = bot-top; if(rowH<5) return [];
     const strip = gray.roi(new cv.Rect(0, top, gray.cols, rowH));
     const sobelX = new cv.Mat(); cv.Sobel(strip, sobelX, cv.CV_32F, 1, 0, 3);
     const absSobel = new cv.Mat(); cv.convertScaleAbs(sobelX, absSobel); sobelX.delete();
+    // Sum vertically
     const profile = new Float64Array(gray.cols);
     for(let x=0;x<gray.cols;x++){let s=0;for(let y=0;y<rowH;y++)s+=absSobel.ucharAt(y,x);profile[x]=s;}
     absSobel.delete(); strip.delete();
-    // Blur
+    // Wider Gaussian blur (σ=3, kernel=15) for robustness against skewed edges
     const blurred = new Float64Array(gray.cols);
-    const sigma=2,kH=4,kernel=[];let kS=0;
+    const sigma=3, kH=7, kernel=[];let kS=0;
     for(let i=-kH;i<=kH;i++){const v=Math.exp(-i*i/(2*sigma*sigma));kernel.push(v);kS+=v;}
     for(let i=0;i<kernel.length;i++)kernel[i]/=kS;
     for(let x=0;x<gray.cols;x++){let v=0;for(let k=0;k<kernel.length;k++){
       v+=profile[Math.max(0,Math.min(gray.cols-1,x+k-kH))]*kernel[k];}blurred[x]=v;}
-    // Peaks
-    const maxV=Math.max(...blurred), thr=maxV*0.15;
-    const peaks=[];
-    for(let x=2;x<gray.cols-2;x++){
-      if(blurred[x]>thr&&blurred[x]>blurred[x-1]&&blurred[x]>blurred[x+1]&&
-         blurred[x]>blurred[x-2]&&blurred[x]>blurred[x+2]) peaks.push(x);
-    }
-    return peaks;
+    return Array.from(blurred);
   }, {top, bot});
 
-  console.log(`Row ${ri}: ${peaks.length} peaks`);
+  // PLL-style box finding per column:
+  // For each column, we know the expected pattern of edges:
+  //   Received: 4 edges (left0, right0=left1, right1=left2, right2) at DIGIT_STRIDE spacing
+  //   KG: 5 edges (left0, r0=l1, r1=l2, r2, decimal gap, left3, right3)
+  // We search for the best offset that maximizes the sum of edge profile values
+  // at the expected edge positions.
 
-  // For each column, compute expected left/right edges of each digit box
-  // and snap to nearest peak
-  const SNAP_RADIUS = 15; // max pixels to snap
+  const boxW_px = BOX_W * IMG_W;  // ~33px
+  const stride_px = DIGIT_STRIDE * IMG_W; // ~37px
+  const decStride_px = DECIMAL_STRIDE * IMG_W; // ~20px
 
   for (let ci = 0; ci < 14; ci++) {
+    // Build the expected edge pattern for this column (relative offsets from first left edge)
+    const edgeOffsets = [0]; // first left edge
     for (let di = 0; di < numDigits; di++) {
-      let xOff = di * DIGIT_STRIDE;
-      if (isKG && di >= 3) xOff = 2 * DIGIT_STRIDE + DECIMAL_STRIDE;
-      const nomLeft = Math.round((COL_X[ci] + xOff) * IMG_W);
-      const nomRight = Math.round((COL_X[ci] + xOff + BOX_W) * IMG_W);
+      let xOff = di * stride_px;
+      if (isKG && di >= 3) xOff = 2 * stride_px + decStride_px + (di-3) * stride_px;
+      edgeOffsets.push(xOff + boxW_px); // right edge of each box
+    }
+    // Also add internal left edges (right edge of box N = left edge of box N+1)
+    // Already covered since stride ≈ boxW for adjacent boxes
 
-      // Snap left edge to nearest peak
-      let bestLeft = nomLeft;
-      let bestLeftDist = SNAP_RADIUS + 1;
-      for (const p of peaks) {
-        const d = Math.abs(p - nomLeft);
-        if (d < bestLeftDist) { bestLeftDist = d; bestLeft = p; }
-      }
+    const nomFirstLeft = COL_X[ci] * IMG_W;
 
-      // Snap right edge to nearest peak
-      let bestRight = nomRight;
-      let bestRightDist = SNAP_RADIUS + 1;
-      for (const p of peaks) {
-        const d = Math.abs(p - nomRight);
-        if (d < bestRightDist) { bestRightDist = d; bestRight = p; }
+    // Search window: ±20px around nominal position
+    const SEARCH_RANGE = 20;
+    let bestOffset = nomFirstLeft;
+    let bestScore = -Infinity;
+
+    for (let offset = nomFirstLeft - SEARCH_RANGE; offset <= nomFirstLeft + SEARCH_RANGE; offset += 0.5) {
+      let score = 0;
+      for (const eo of edgeOffsets) {
+        const x = Math.round(offset + eo);
+        if (x >= 0 && x < edgeProfile.length) {
+          score += edgeProfile[x];
+        }
       }
+      if (score > bestScore) { bestScore = score; bestOffset = offset; }
+    }
+
+    // Extract boxes using the best-fit offset
+    for (let di = 0; di < numDigits; di++) {
+      let xOff = di * stride_px;
+      if (isKG && di >= 3) xOff = 2 * stride_px + decStride_px + (di-3) * stride_px;
+      const left = Math.round(bestOffset + xOff);
+      const right = Math.round(bestOffset + xOff + boxW_px);
 
       const expected = nextDigit();
       allBoxes.push({
-        left: bestLeft, right: bestRight, top, bottom: bot,
-        expected, snappedL: bestLeftDist <= SNAP_RADIUS, snappedR: bestRightDist <= SNAP_RADIUS,
+        left, right, top, bottom: bot, expected,
+        snappedL: true, snappedR: true, // PLL always produces a result
       });
     }
   }
+
+  console.log(`Row ${ri}: PLL found ${14} column positions`);
 }
 
 console.log(`Total boxes: ${allBoxes.length}, snapped left: ${allBoxes.filter(b=>b.snappedL).length}, snapped right: ${allBoxes.filter(b=>b.snappedR).length}`);

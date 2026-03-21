@@ -124,9 +124,9 @@ for (let ri = 0; ri < 3; ri++) {
     }
     absSobel.delete();
 
-    // Gaussian blur σ=2
+    // Wider Gaussian blur σ=3 for robustness against skewed edges
     const blurred = new Float64Array(gray.cols);
-    const sigma = 2, kHalf = 4;
+    const sigma = 3, kHalf = 7;
     const kernel = [];
     let kSum = 0;
     for (let i = -kHalf; i <= kHalf; i++) { const v = Math.exp(-i*i/(2*sigma*sigma)); kernel.push(v); kSum += v; }
@@ -142,7 +142,7 @@ for (let ri = 0; ri < 3; ri++) {
 
     // Local maxima
     const maxVal = Math.max(...blurred);
-    const threshold = maxVal * 0.15;
+    const threshold = maxVal * 0.25;
     const peaks = [];
     for (let x = 2; x < gray.cols-2; x++) {
       if (blurred[x]>threshold && blurred[x]>blurred[x-1] && blurred[x]>blurred[x+1] &&
