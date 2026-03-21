@@ -25,7 +25,9 @@ PWA to verify handwritten numerical fields on healthcare waste manifest forms. C
 
 **Phase 0 (Scaffolding) — COMPLETE.** See `doc/phase0-scaffolding.md`.
 
-**Phase 1 (Camera Capture) — NEXT.** See plan details in `doc/architecture.md` and `doc/phase0-scaffolding.md` (next steps section).
+**Phase 1 (Camera Capture) — COMPLETE.** See `doc/phase1-camera.md`.
+
+**Phase 2 (ArUco Detection) — NEXT.** See `doc/architecture.md`.
 
 ## Implementation Plan
 
@@ -34,8 +36,8 @@ Full phased plan is in `doc/architecture.md`. Summary:
 | Phase | Focus | Status |
 |-------|-------|--------|
 | 0 | Project scaffolding, devcontainer | **Complete** |
-| 1 | Camera capture component | Next |
-| 2 | ArUco detection + perspective correction | Pending |
+| 1 | Camera capture component | **Complete** |
+| 2 | ArUco detection + perspective correction | Next |
 | 3 | ROI extraction + OCR | Pending |
 | 4 | Verification UI | Pending |
 | 5 | Export + polish | Pending |
@@ -54,7 +56,9 @@ Full phased plan is in `doc/architecture.md`. Summary:
 - `doc/current manifest design.pdf` — Reference form (waste manifest with handwritten fields)
 - `doc/architecture.md` — Full technical architecture and design rationale
 - `doc/phase0-scaffolding.md` — Phase 0 completion report with next steps
-- `src/components/app-shell.ts` — Main app shell component
+- `src/components/app-shell.ts` — Main app shell component (home + camera views)
+- `src/components/camera-capture.ts` — Camera capture component (getUserMedia, capture/preview flow)
+- `src/utils/db.ts` — IndexedDB storage module (captures CRUD)
 - `vite.config.ts` — Vite + PWA configuration
 
 ## Documentation Convention
