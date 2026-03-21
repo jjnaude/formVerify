@@ -1,0 +1,20 @@
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html,
+body {
+  height: 100%;
+  font-family: system-ui, -apple-system, sans-serif;
+  background: #f5f5f5;
+  color: #212121;
+}
+
+body {
+  display: flex;
+  flex-direction: column;
+}
