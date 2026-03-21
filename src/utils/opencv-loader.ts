@@ -1,49 +1,54 @@
 /**
- * Async loader for OpenCV.js WASM runtime.
- * Returns the `cv` module once the WASM is ready.
+ * Async loader for OpenCV.js via script tag.
+ *
+ * Loads the pre-built OpenCV.js from a CDN and waits for WASM
+ * initialization. This avoids Vite bundling issues with the npm
+ * package (Node.js API externalization breaks WASM init).
  */
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type CV = any;
 
-let cvInstance: CV | null = null;
+declare global {
+  interface Window {
+    cv: CV;
+    Module: { onRuntimeInitialized: () => void };
+  }
+}
+
+const OPENCV_CDN_URL =
+  'https://docs.opencv.org/4.10.0/opencv.js';
+
 let loadPromise: Promise<CV> | null = null;
 
 export function loadOpenCV(): Promise<CV> {
-  if (cvInstance) return Promise.resolve(cvInstance);
+  if (window.cv?.Mat) return Promise.resolve(window.cv);
   if (loadPromise) return loadPromise;
 
-  loadPromise = (async () => {
-    const cvModule = await import('@techstark/opencv-js');
-    const cv = cvModule.default || cvModule;
+  loadPromise = new Promise<CV>((resolve, reject) => {
+    // Set up the callback before loading the script
+    window.Module = {
+      onRuntimeInitialized() {
+        resolve(window.cv);
+      },
+    };
 
-    // The module may need async WASM initialization
-    if (cv.Mat) {
-      cvInstance = cv;
-      return cv;
-    }
-
-    // Wait for runtime initialization
-    await new Promise<void>((resolve) => {
-      if (cv.onRuntimeInitialized !== undefined) {
-        const original = cv.onRuntimeInitialized;
-        cv.onRuntimeInitialized = () => {
-          if (typeof original === 'function') original();
-          resolve();
-        };
-      } else {
-        // Poll for readiness
-        const check = () => {
-          if (cv.Mat) resolve();
-          else setTimeout(check, 50);
-        };
-        check();
+    const script = document.createElement('script');
+    script.src = OPENCV_CDN_URL;
+    script.async = true;
+    script.onload = () => {
+      // If cv is already ready (no WASM needed), resolve immediately
+      if (window.cv?.Mat) {
+        resolve(window.cv);
       }
-    });
-
-    cvInstance = cv;
-    return cv;
-  })();
+      // Otherwise onRuntimeInitialized will fire
+    };
+    script.onerror = () => {
+      loadPromise = null;
+      reject(new Error('Failed to load OpenCV.js from CDN'));
+    };
+    document.head.appendChild(script);
+  });
 
   return loadPromise;
 }
