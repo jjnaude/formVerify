@@ -49,7 +49,7 @@ export function detectMarkers(cv: CV, src: CV): DetectedMarker[] {
  * Use OpenCV's built-in ArUco detector (cv.aruco_ArucoDetector).
  */
 function detectWithNativeAruco(cv: CV, gray: CV): DetectedMarker[] {
-  const dictionary = new cv.aruco_Dictionary(cv.DICT_4X4_50);
+  const dictionary = cv.getPredefinedDictionary(cv.DICT_4X4_50);
   const parameters = new cv.aruco_DetectorParameters();
   const detector = new cv.aruco_ArucoDetector(dictionary, parameters);
 
