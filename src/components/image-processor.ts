@@ -191,6 +191,12 @@ export class ImageProcessor extends LitElement {
   private _roiImages = new Map<string, string>();
   /** Map of cellId → data URL for the preprocessed ROI image */
   private _roiPreprocessed = new Map<string, string>();
+  /** Map of cellId → data URL for the debug search region */
+  private _roiDebugSearch = new Map<string, string>();
+  /** Map of cellId → data URL for the debug contour image */
+  private _roiDebugContours = new Map<string, string>();
+  /** Map of cellId → whether box was detected */
+  private _roiBoxDetected = new Map<string, boolean>();
 
   connectedCallback(): void {
     super.connectedCallback();
@@ -277,6 +283,13 @@ export class ImageProcessor extends LitElement {
           for (const roi of rois) {
             this._roiImages.set(roi.cell.id, this._imageDataToDataUrl(roi.imageData));
             this._roiPreprocessed.set(roi.cell.id, this._imageDataToDataUrl(roi.preprocessedData));
+            if (roi.debugSearchRegion) {
+              this._roiDebugSearch.set(roi.cell.id, this._imageDataToDataUrl(roi.debugSearchRegion));
+            }
+            if (roi.debugContours) {
+              this._roiDebugContours.set(roi.cell.id, this._imageDataToDataUrl(roi.debugContours));
+            }
+            this._roiBoxDetected.set(roi.cell.id, roi.boxDetected);
           }
 
           // Run OCR
@@ -343,40 +356,92 @@ export class ImageProcessor extends LitElement {
     `;
   }
 
+  /** Get all digit box IDs for the same field as the given cell ID. */
+  private _getFieldDigitIds(cellId: string): string[] {
+    const fieldId = cellId.replace(/_d\d+$/, '');
+    return MANIFEST_SCHEMA.digitBoxes
+      .filter((b) => b.id.startsWith(fieldId + '_d'))
+      .map((b) => b.id);
+  }
+
+  private _navigateDigit(delta: number): void {
+    const digitIds = this._getFieldDigitIds(this._selectedCellId);
+    const idx = digitIds.indexOf(this._selectedCellId);
+    const newIdx = Math.max(0, Math.min(digitIds.length - 1, idx + delta));
+    this._selectedCellId = digitIds[newIdx];
+  }
+
   private _renderCellPreview() {
     if (!this._selectedCellId) return nothing;
 
     const rawUrl = this._roiImages.get(this._selectedCellId);
-    const ppUrl = this._roiPreprocessed.get(this._selectedCellId);
     if (!rawUrl) return nothing;
+
+    const ppUrl = this._roiPreprocessed.get(this._selectedCellId);
+    const searchUrl = this._roiDebugSearch.get(this._selectedCellId);
+    const contoursUrl = this._roiDebugContours.get(this._selectedCellId);
+    const boxDetected = this._roiBoxDetected.get(this._selectedCellId);
 
     const result = this._ocrResults.find((r) => r.cellId === this._selectedCellId);
     const cell = [...MANIFEST_SCHEMA.digitBoxes, MANIFEST_SCHEMA.tracking].find(
       (c) => c.id === this._selectedCellId,
     );
 
+    // Digit navigation for digit boxes
+    const isDigitBox = this._selectedCellId.includes('_d');
+    const digitIds = isDigitBox ? this._getFieldDigitIds(this._selectedCellId) : [];
+    const digitIdx = digitIds.indexOf(this._selectedCellId);
+
     return html`
       <div class="cell-preview">
         <div class="cell-preview-header">
           ${cell?.col || this._selectedCellId}
           ${cell?.row && cell.row !== 'tracking' ? ` (${cell.row})` : ''}
+          ${isDigitBox ? html` — digit ${digitIdx + 1}/${digitIds.length}` : ''}
         </div>
-        <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; justify-content:center;">
+
+        ${isDigitBox && digitIds.length > 1 ? html`
+          <div style="display:flex; gap:8px; justify-content:center; margin:4px 0;">
+            <button style="padding:4px 12px; font-size:0.85rem;" ?disabled=${digitIdx === 0}
+              @click=${() => this._navigateDigit(-1)}>&larr; Prev</button>
+            <button style="padding:4px 12px; font-size:0.85rem;" ?disabled=${digitIdx === digitIds.length - 1}
+              @click=${() => this._navigateDigit(1)}>Next &rarr;</button>
+          </div>
+        ` : nothing}
+
+        <div class="cell-preview-details">
+          Result: <strong>"${result?.text || ''}"</strong> |
+          Confidence: <strong>${result?.confidence?.toFixed(0) ?? '?'}%</strong> |
+          Box detected: <strong style="color:${boxDetected ? '#4caf50' : '#d93025'}">${boxDetected ? 'Yes' : 'No (fallback)'}</strong>
+        </div>
+
+        <div style="display:grid; grid-template-columns:1fr 1fr; gap:6px; width:100%;">
+          ${searchUrl ? html`
+            <div style="text-align:center">
+              <div style="font-size:0.65rem; color:#999;">Search region</div>
+              <img class="cell-preview-img" src=${searchUrl} alt="Search region"
+                style="width:100%; height:auto; image-rendering:pixelated;" />
+            </div>
+          ` : nothing}
+          ${contoursUrl ? html`
+            <div style="text-align:center">
+              <div style="font-size:0.65rem; color:#999;">Contours (green=best, blue=candidates, red=center)</div>
+              <img class="cell-preview-img" src=${contoursUrl} alt="Contour detection"
+                style="width:100%; height:auto; image-rendering:pixelated;" />
+            </div>
+          ` : nothing}
           <div style="text-align:center">
-            <div style="font-size:0.7rem; color:#999; margin-bottom:2px">Raw</div>
+            <div style="font-size:0.65rem; color:#999;">Cropped</div>
             <img class="cell-preview-img" src=${rawUrl} alt="Raw crop"
-              style="max-width:45%; height:auto; min-height:30px;" />
+              style="width:100%; height:auto; image-rendering:pixelated;" />
           </div>
           ${ppUrl ? html`
             <div style="text-align:center">
-              <div style="font-size:0.7rem; color:#999; margin-bottom:2px">Preprocessed</div>
+              <div style="font-size:0.65rem; color:#999;">Preprocessed (OCR input)</div>
               <img class="cell-preview-img" src=${ppUrl} alt="Preprocessed"
-                style="max-width:45%; height:auto; min-height:30px;" />
+                style="width:100%; height:auto; image-rendering:pixelated;" />
             </div>
           ` : nothing}
-        </div>
-        <div class="cell-preview-details">
-          OCR: "${result?.text || ''}" | Confidence: ${result?.confidence?.toFixed(0) ?? '?'}%
         </div>
       </div>
     `;

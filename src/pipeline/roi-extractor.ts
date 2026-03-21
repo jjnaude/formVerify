@@ -26,6 +26,12 @@ export interface ExtractedROI {
   imageData: ImageData;
   /** Preprocessed (binarized) cell image as ImageData */
   preprocessedData: ImageData;
+  /** Debug: oversized search region before box detection */
+  debugSearchRegion?: ImageData;
+  /** Debug: search region with detected contours drawn */
+  debugContours?: ImageData;
+  /** Whether a printed box was detected (vs fallback to nominal) */
+  boxDetected: boolean;
 }
 
 /**
@@ -61,10 +67,20 @@ export function extractROIs(
     const searchROI = corrected.roi(searchRect);
 
     try {
+      // Debug: capture search region
+      const debugSearchRegion = matToImageData(cv, searchROI);
+
       // Detect the printed box within the search region
-      const detected = detectPrintedBox(cv, searchROI, nomW, nomH);
+      const detection = detectPrintedBox(cv, searchROI, nomW, nomH);
+      const detected = detection.rect;
+
+      // Debug: draw contours + detected rect on search region copy
+      const debugContours = createDebugContourImage(
+        cv, searchROI, detection.allRects, detected,
+      );
 
       let cropMat: CV;
+      const boxDetected = detected !== null;
       if (detected) {
         // Inset from detected rectangle to exclude the printed border
         const inset = RECT_BORDER_INSET;
@@ -99,27 +115,18 @@ export function extractROIs(
       }
 
       // Raw crop → ImageData
-      const rawCanvas = document.createElement('canvas');
-      rawCanvas.width = cropMat.cols;
-      rawCanvas.height = cropMat.rows;
-      cv.imshow(rawCanvas, cropMat);
-      const imageData = rawCanvas.getContext('2d')!.getImageData(
-        0, 0, cropMat.cols, cropMat.rows,
-      );
+      const imageData = matToImageData(cv, cropMat);
 
       // Preprocessed crop → ImageData
       const preprocessed = preprocessCell(cv, cropMat);
-      const ppCanvas = document.createElement('canvas');
-      ppCanvas.width = preprocessed.cols;
-      ppCanvas.height = preprocessed.rows;
-      cv.imshow(ppCanvas, preprocessed);
-      const preprocessedData = ppCanvas.getContext('2d')!.getImageData(
-        0, 0, preprocessed.cols, preprocessed.rows,
-      );
+      const preprocessedData = matToImageData(cv, preprocessed);
       preprocessed.delete();
       cropMat.delete();
 
-      results.push({ cell, imageData, preprocessedData });
+      results.push({
+        cell, imageData, preprocessedData,
+        debugSearchRegion, debugContours, boxDetected,
+      });
     } finally {
       searchROI.delete();
     }
@@ -128,24 +135,29 @@ export function extractROIs(
   return results;
 }
 
+interface Rect {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+interface DetectionResult {
+  rect: Rect | null;
+  allRects: Rect[];
+}
+
 /**
  * Detect the printed digit box rectangle within a search region.
  *
- * Looks for a rectangle of approximately the expected size by:
- * 1. Convert to grayscale
- * 2. Adaptive threshold (to find printed lines)
- * 3. Find contours
- * 4. Filter for rectangles close to the expected size
- * 5. Pick the best match (closest to center and expected size)
- *
- * @returns Detected rectangle {x, y, w, h} in search region coords, or null
+ * Returns the best matching rectangle and all candidate rectangles for debugging.
  */
 function detectPrintedBox(
   cv: CV,
   searchRegion: CV,
   expectedW: number,
   expectedH: number,
-): { x: number; y: number; w: number; h: number } | null {
+): DetectionResult {
   const gray = new cv.Mat();
   const thresh = new cv.Mat();
   const contours = new cv.MatVector();
@@ -184,8 +196,9 @@ function detectPrintedBox(
     const minH = expectedH * 0.5;
     const maxH = expectedH * 1.5;
 
-    let bestRect: { x: number; y: number; w: number; h: number } | null = null;
+    let bestRect: Rect | null = null;
     let bestScore = Infinity;
+    const allRects: Rect[] = [];
 
     const approx = new cv.Mat();
 
@@ -194,7 +207,6 @@ function detectPrintedBox(
       const perimeter = cv.arcLength(contour, true);
       cv.approxPolyDP(contour, approx, 0.04 * perimeter, true);
 
-      // Must be a quadrilateral
       if (approx.rows !== 4 || !cv.isContourConvex(approx)) {
         contour.delete();
         continue;
@@ -203,12 +215,13 @@ function detectPrintedBox(
       const br = cv.boundingRect(contour);
       contour.delete();
 
-      // Filter by size
       if (br.width < minW || br.width > maxW || br.height < minH || br.height > maxH) {
         continue;
       }
 
-      // Score: distance from center of search region + size deviation
+      const r: Rect = { x: br.x, y: br.y, w: br.width, h: br.height };
+      allRects.push(r);
+
       const cx = br.x + br.width / 2;
       const cy = br.y + br.height / 2;
       const distFromCenter = Math.sqrt(
@@ -223,16 +236,75 @@ function detectPrintedBox(
 
       if (score < bestScore) {
         bestScore = score;
-        bestRect = { x: br.x, y: br.y, w: br.width, h: br.height };
+        bestRect = r;
       }
     }
 
     approx.delete();
-    return bestRect;
+    return { rect: bestRect, allRects };
   } finally {
     gray.delete();
     thresh.delete();
     contours.delete();
     hierarchy.delete();
   }
+}
+
+/** Convert a cv.Mat to ImageData via canvas. */
+function matToImageData(cv: CV, mat: CV): ImageData {
+  const canvas = document.createElement('canvas');
+  canvas.width = mat.cols;
+  canvas.height = mat.rows;
+  cv.imshow(canvas, mat);
+  return canvas.getContext('2d')!.getImageData(0, 0, mat.cols, mat.rows);
+}
+
+/** Draw debug visualization: all candidate rects (blue) + winner (green) on the search region. */
+function createDebugContourImage(
+  cv: CV,
+  searchRegion: CV,
+  allRects: Rect[],
+  bestRect: Rect | null,
+): ImageData {
+  // Convert to color for drawing
+  const debug = new cv.Mat();
+  if (searchRegion.channels() === 1) {
+    cv.cvtColor(searchRegion, debug, cv.COLOR_GRAY2RGBA);
+  } else if (searchRegion.channels() === 3) {
+    cv.cvtColor(searchRegion, debug, cv.COLOR_RGB2RGBA);
+  } else {
+    searchRegion.copyTo(debug);
+  }
+
+  // Draw all candidate rects in blue
+  for (const r of allRects) {
+    cv.rectangle(
+      debug,
+      new cv.Point(r.x, r.y),
+      new cv.Point(r.x + r.w, r.y + r.h),
+      new cv.Scalar(0, 100, 255, 255), // blue
+      1,
+    );
+  }
+
+  // Draw winner in green, thicker
+  if (bestRect) {
+    cv.rectangle(
+      debug,
+      new cv.Point(bestRect.x, bestRect.y),
+      new cv.Point(bestRect.x + bestRect.w, bestRect.y + bestRect.h),
+      new cv.Scalar(0, 255, 0, 255), // green
+      2,
+    );
+  }
+
+  // Draw crosshair at center (nominal position)
+  const cx = Math.round(debug.cols / 2);
+  const cy = Math.round(debug.rows / 2);
+  cv.line(debug, new cv.Point(cx - 5, cy), new cv.Point(cx + 5, cy), new cv.Scalar(255, 0, 0, 255), 1);
+  cv.line(debug, new cv.Point(cx, cy - 5), new cv.Point(cx, cy + 5), new cv.Scalar(255, 0, 0, 255), 1);
+
+  const result = matToImageData(cv, debug);
+  debug.delete();
+  return result;
 }
