@@ -62,28 +62,37 @@ const COLUMNS = [
 
 const ROWS = ['received', 'gross_kg', 'nett_kg'];
 
-// --- Measured positions (normalized) ---
+// --- Measured from rectified image (2339x1654) ---
 
 // Column x positions (first digit box in each column)
 const COL_X: number[] = [
-  0.0203, 0.1309, 0.2414, 0.3520, 0.4625,
-  0.5731, 0.6836, 0.7942, 0.9047, 1.0153,
-  1.1258, 1.2364, 1.3469, 1.4575,
+  0.0409, 0.1109, 0.181, 0.2511, 0.3211, 0.3912, 0.4613, 0.5313, 0.6014, 0.6714, 0.7415, 0.8116,
+  0.8816, 0.9517,
 ];
 
 // Row y positions
-const ROW_Y: number[] = [0.2063, 0.2628, 0.3193];
+const ROW_Y: number[] = [0.1485, 0.1822, 0.2145];
 
 // Digit box dimensions (uniform for all boxes)
-const BOX_W = 0.0239;
-const BOX_H = 0.0488;
+const BOX_W = 0.0143;
+const BOX_H = 0.0308;
 
-// Stride between consecutive digit boxes (same as box width — boxes are touching)
-const DIGIT_STRIDE = 0.0239;
+// Stride between consecutive digit boxes
+const DIGIT_STRIDE = 0.0159;
 
-// Stride across the decimal separator (slightly wider gap)
-const DECIMAL_STRIDE = 0.0338;
+// Stride across the decimal separator
+const DECIMAL_STRIDE = 0.0085;
 
+// Tracking box
+// tracking: {
+//   id: 'tracking_no',
+//   row: 'tracking',
+//   col: 'tracking_no',
+//   x: 0.0807,
+//   y: 0.0321,
+//   w: 0.1492,
+//   h: 0.0398,
+// },
 // --- Field structure ---
 
 /** Received row: 3 whole-number digits per field */
@@ -149,10 +158,10 @@ export const MANIFEST_SCHEMA: FormSchema = {
     id: 'tracking_no',
     row: 'tracking',
     col: 'tracking_no',
-    x: 0.0413,
-    y: 0.0660,
-    w: 0.1594,
-    h: 0.0427,
+    x: 0.0807,
+    y: 0.0321,
+    w: 0.1492,
+    h: 0.0398,
   },
   digitBoxes: buildDigitBoxes(),
 };
@@ -163,9 +172,7 @@ export const MANIFEST_SCHEMA: FormSchema = {
  * @param digits - Map of digit box ID → recognized digit string
  * @returns Map of field ID → assembled value string (e.g. "123,4")
  */
-export function assembleFieldValues(
-  digits: Map<string, string>,
-): Map<string, string> {
+export function assembleFieldValues(digits: Map<string, string>): Map<string, string> {
   // Group digits by fieldId
   const fields = new Map<string, { digitIndex: number; isDecimal: boolean; value: string }[]>();
 
