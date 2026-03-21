@@ -34,7 +34,7 @@ async function getWorker(): Promise<Tesseract.Worker> {
 
   await worker.setParameters({
     tessedit_char_whitelist: '0123456789.',
-    tessedit_pageseg_mode: Tesseract.PSM.SINGLE_LINE,
+    tessedit_pageseg_mode: Tesseract.PSM.SINGLE_CHAR,
   });
 
   return worker;
@@ -55,14 +55,14 @@ export async function recognizeCells(
   const results: OCRResult[] = [];
 
   for (let i = 0; i < rois.length; i++) {
-    const { cell, imageData } = rois[i];
+    const { cell, preprocessedData } = rois[i];
 
-    // Convert ImageData to canvas for Tesseract
+    // Convert preprocessed ImageData to canvas for Tesseract
     const canvas = document.createElement('canvas');
-    canvas.width = imageData.width;
-    canvas.height = imageData.height;
+    canvas.width = preprocessedData.width;
+    canvas.height = preprocessedData.height;
     const ctx = canvas.getContext('2d')!;
-    ctx.putImageData(imageData, 0, 0);
+    ctx.putImageData(preprocessedData, 0, 0);
 
     const { data } = await w.recognize(canvas);
     const text = data.text.trim();

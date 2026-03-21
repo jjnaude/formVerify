@@ -3,7 +3,7 @@ import { customElement, property, state } from 'lit/decorators.js';
 import { loadOpenCV } from '../utils/opencv-loader.js';
 import { detectMarkers, type DetectedMarker } from '../pipeline/aruco-detector.js';
 import { correctPerspective, matToBlob } from '../pipeline/perspective.js';
-import { extractROIs, type ExtractedROI } from '../pipeline/roi-extractor.js';
+import { extractROIs } from '../pipeline/roi-extractor.js';
 import { recognizeCells, type OCRResult } from '../pipeline/ocr.js';
 import { MANIFEST_SCHEMA } from '../models/form-schema.js';
 import { getCapture, saveCapture, updateCaptureStatus } from '../utils/db.js';
@@ -187,8 +187,10 @@ export class ImageProcessor extends LitElement {
   @state() private _ocrProgress = '';
   @state() private _selectedCellId = '';
 
-  /** Map of cellId → data URL for the cropped ROI image */
+  /** Map of cellId → data URL for the raw cropped ROI image */
   private _roiImages = new Map<string, string>();
+  /** Map of cellId → data URL for the preprocessed ROI image */
+  private _roiPreprocessed = new Map<string, string>();
 
   connectedCallback(): void {
     super.connectedCallback();
@@ -202,12 +204,12 @@ export class ImageProcessor extends LitElement {
     }
   }
 
-  private _roiToDataUrl(roi: ExtractedROI): string {
+  private _imageDataToDataUrl(data: ImageData): string {
     const canvas = document.createElement('canvas');
-    canvas.width = roi.imageData.width;
-    canvas.height = roi.imageData.height;
+    canvas.width = data.width;
+    canvas.height = data.height;
     const ctx = canvas.getContext('2d')!;
-    ctx.putImageData(roi.imageData, 0, 0);
+    ctx.putImageData(data, 0, 0);
     return canvas.toDataURL('image/png');
   }
 
@@ -273,7 +275,8 @@ export class ImageProcessor extends LitElement {
 
           // Store ROI images for preview
           for (const roi of rois) {
-            this._roiImages.set(roi.cell.id, this._roiToDataUrl(roi));
+            this._roiImages.set(roi.cell.id, this._imageDataToDataUrl(roi.imageData));
+            this._roiPreprocessed.set(roi.cell.id, this._imageDataToDataUrl(roi.preprocessedData));
           }
 
           // Run OCR
@@ -343,8 +346,9 @@ export class ImageProcessor extends LitElement {
   private _renderCellPreview() {
     if (!this._selectedCellId) return nothing;
 
-    const imgUrl = this._roiImages.get(this._selectedCellId);
-    if (!imgUrl) return nothing;
+    const rawUrl = this._roiImages.get(this._selectedCellId);
+    const ppUrl = this._roiPreprocessed.get(this._selectedCellId);
+    if (!rawUrl) return nothing;
 
     const result = this._ocrResults.find((r) => r.cellId === this._selectedCellId);
     const cell = [...MANIFEST_SCHEMA.table, MANIFEST_SCHEMA.tracking].find(
@@ -357,12 +361,20 @@ export class ImageProcessor extends LitElement {
           ${cell?.col || this._selectedCellId}
           ${cell?.row && cell.row !== 'tracking' ? ` (${cell.row})` : ''}
         </div>
-        <img
-          class="cell-preview-img"
-          src=${imgUrl}
-          alt="Cropped cell"
-          style="max-width: 100%; height: auto; min-height: 40px;"
-        />
+        <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; justify-content:center;">
+          <div style="text-align:center">
+            <div style="font-size:0.7rem; color:#999; margin-bottom:2px">Raw</div>
+            <img class="cell-preview-img" src=${rawUrl} alt="Raw crop"
+              style="max-width:45%; height:auto; min-height:30px;" />
+          </div>
+          ${ppUrl ? html`
+            <div style="text-align:center">
+              <div style="font-size:0.7rem; color:#999; margin-bottom:2px">Preprocessed</div>
+              <img class="cell-preview-img" src=${ppUrl} alt="Preprocessed"
+                style="max-width:45%; height:auto; min-height:30px;" />
+            </div>
+          ` : nothing}
+        </div>
         <div class="cell-preview-details">
           OCR: "${result?.text || ''}" | Confidence: ${result?.confidence?.toFixed(0) ?? '?'}%
         </div>
