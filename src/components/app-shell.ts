@@ -122,6 +122,20 @@ export class AppShell extends LitElement {
     this._view = 'processing';
   }
 
+  private async _onFileUpload(): Promise<void> {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = 'image/*';
+    input.onchange = async () => {
+      const file = input.files?.[0];
+      if (!file) return;
+      const { saveCapture } = await import('../utils/db.js');
+      this._captureId = await saveCapture(file);
+      this._view = 'processing';
+    };
+    input.click();
+  }
+
   private _onProcessingComplete(): void {
     this._toast = 'Form processed successfully';
     this._view = 'home';
@@ -153,9 +167,12 @@ export class AppShell extends LitElement {
         <button class="capture-btn" @click=${this._showCamera}>
           Capture Form
         </button>
+        <button class="capture-btn" style="background:#666" @click=${this._onFileUpload}>
+          Upload Image
+        </button>
         <p class="info">
           Take a photo of a waste manifest form<br />
-          to begin verification.
+          or upload an existing image to begin verification.
         </p>
       </main>
     `;
