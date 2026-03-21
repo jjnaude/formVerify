@@ -152,26 +152,38 @@ for (let ri = 0; ri < 3; ri++) {
   }, {top, bot});
 
   // PLL-style box finding per column:
-  // For each column, we know the expected pattern of edges:
-  //   Received: 4 edges (left0, right0=left1, right1=left2, right2) at DIGIT_STRIDE spacing
-  //   KG: 5 edges (left0, r0=l1, r1=l2, r2, decimal gap, left3, right3)
-  // We search for the best offset that maximizes the sum of edge profile values
-  // at the expected edge positions.
+  // Build the complete set of expected vertical edge positions for one column.
+  // Every box has a left and right edge. Adjacent boxes within a group share
+  // edges (right of box N = left of box N+1), but the decimal gap creates
+  // distinct left/right edges for box 2 right and box 3 left.
 
   const boxW_px = BOX_W * IMG_W;  // ~33px
   const stride_px = DIGIT_STRIDE * IMG_W; // ~37px
   const decStride_px = DECIMAL_STRIDE * IMG_W; // ~20px
 
   for (let ci = 0; ci < 14; ci++) {
-    // Build the expected edge pattern for this column (relative offsets from first left edge)
-    const edgeOffsets = [0]; // first left edge
+    // Build complete edge list for this column.
+    // Within a column, boxes are positioned at:
+    //   Received: box0 at 0, box1 at stride, box2 at 2*stride
+    //   KG: box0 at 0, box1 at stride, box2 at 2*stride,
+    //       box3 at 2*stride + boxW + decimalGap (DECIMAL_STRIDE is the gap, not stride)
+    const edgeSet = new Set();
     for (let di = 0; di < numDigits; di++) {
-      let xOff = di * stride_px;
-      if (isKG && di >= 3) xOff = 2 * stride_px + decStride_px + (di-3) * stride_px;
-      edgeOffsets.push(xOff + boxW_px); // right edge of each box
+      let leftOff;
+      if (!isKG) {
+        leftOff = di * stride_px;
+      } else {
+        if (di < 3) {
+          leftOff = di * stride_px;
+        } else {
+          // box3 starts after box2-right + decimal gap
+          leftOff = 2 * stride_px + boxW_px + decStride_px;
+        }
+      }
+      edgeSet.add(Math.round(leftOff * 10) / 10);
+      edgeSet.add(Math.round((leftOff + boxW_px) * 10) / 10);
     }
-    // Also add internal left edges (right edge of box N = left edge of box N+1)
-    // Already covered since stride ≈ boxW for adjacent boxes
+    const edgeOffsets = Array.from(edgeSet).sort((a, b) => a - b);
 
     const nomFirstLeft = COL_X[ci] * IMG_W;
 
@@ -193,10 +205,15 @@ for (let ri = 0; ri < 3; ri++) {
 
     // Extract boxes using the best-fit offset
     for (let di = 0; di < numDigits; di++) {
-      let xOff = di * stride_px;
-      if (isKG && di >= 3) xOff = 2 * stride_px + decStride_px + (di-3) * stride_px;
-      const left = Math.round(bestOffset + xOff);
-      const right = Math.round(bestOffset + xOff + boxW_px);
+      let leftOff;
+      if (!isKG) {
+        leftOff = di * stride_px;
+      } else {
+        if (di < 3) leftOff = di * stride_px;
+        else leftOff = 2 * stride_px + boxW_px + decStride_px; // after box2-right + decimal gap
+      }
+      const left = Math.round(bestOffset + leftOff);
+      const right = Math.round(bestOffset + leftOff + boxW_px);
 
       const expected = nextDigit();
       allBoxes.push({
