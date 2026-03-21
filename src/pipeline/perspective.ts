@@ -21,9 +21,9 @@ import type { DetectedMarker, Point } from './aruco-detector.js';
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type CV = any;
 
-/** A4 at 200 DPI: 1654 × 2339 pixels */
-const A4_WIDTH = 1654;
-const A4_HEIGHT = 2339;
+/** A4 landscape at 200 DPI: 2339 × 1654 pixels */
+const A4_WIDTH = 2339;
+const A4_HEIGHT = 1654;
 
 export interface CorrectionResult {
   /** The orthorectified image as a cv.Mat (caller must delete). */
