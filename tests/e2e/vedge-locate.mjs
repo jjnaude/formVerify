@@ -125,6 +125,9 @@ const allBoxes = []; // {left, right, top, bottom, expected}
 let digitCounter = 0;
 const nextDigit = () => (digitCounter++) % 10;
 
+// Store column offsets found in received row to anchor KG rows
+const receivedColumnOffsets = new Array(14).fill(null);
+
 for (let ri = 0; ri < 3; ri++) {
   const top = matchedBounds[ri], bot = matchedBounds[ri+1];
   const isKG = ri > 0;
@@ -185,14 +188,19 @@ for (let ri = 0; ri < 3; ri++) {
     }
     const edgeOffsets = Array.from(edgeSet).sort((a, b) => a - b);
 
+    // For KG rows, use the received row's column offset as anchor
+    // (columns are vertically aligned across all rows)
     const nomFirstLeft = COL_X[ci] * IMG_W;
+    const anchorOffset = (isKG && receivedColumnOffsets[ci] !== null)
+      ? receivedColumnOffsets[ci]
+      : nomFirstLeft;
 
-    // Search window: ±20px around nominal position
-    const SEARCH_RANGE = 20;
-    let bestOffset = nomFirstLeft;
+    // Narrower search for KG rows (anchored), wider for received (discovery)
+    const SEARCH_RANGE = isKG ? 10 : 20;
+    let bestOffset = anchorOffset;
     let bestScore = -Infinity;
 
-    for (let offset = nomFirstLeft - SEARCH_RANGE; offset <= nomFirstLeft + SEARCH_RANGE; offset += 0.5) {
+    for (let offset = anchorOffset - SEARCH_RANGE; offset <= anchorOffset + SEARCH_RANGE; offset += 0.5) {
       let score = 0;
       for (const eo of edgeOffsets) {
         const x = Math.round(offset + eo);
@@ -201,6 +209,11 @@ for (let ri = 0; ri < 3; ri++) {
         }
       }
       if (score > bestScore) { bestScore = score; bestOffset = offset; }
+    }
+
+    // Save column offset from received row for anchoring
+    if (!isKG) {
+      receivedColumnOffsets[ci] = bestOffset;
     }
 
     // Extract boxes using the best-fit offset
