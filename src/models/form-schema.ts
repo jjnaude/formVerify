@@ -51,19 +51,17 @@ const ROWS = ['received', 'gross_kg', 'nett_kg'];
 
 // Column x positions and widths (normalized, from Playwright measurement)
 const COL_X: number[] = [
-  0.0146, 0.0703, 0.1486, 0.2269, 0.3052,
-  0.3978, 0.4905, 0.5831, 0.6757, 0.7684,
+  0.01491935, 0.07137097, 0.14879032, 0.22782258, 0.3052, 0.3978, 0.4905, 0.5831, 0.6757, 0.7684,
   0.8518, 0.9352, 0.9858, 1.0436,
 ];
 const COL_W: number[] = [
-  0.0557, 0.0783, 0.0783, 0.0783, 0.0926,
-  0.0926, 0.0926, 0.0926, 0.0926, 0.0834,
+  0.05645161, 0.07741935, 0.07903226, 0.0783, 0.0926, 0.0926, 0.0926, 0.0926, 0.0926, 0.0834,
   0.0834, 0.0506, 0.0578, 0.0651,
 ];
 
 // Row y positions (normalized)
-const ROW_Y: number[] = [0.1805, 0.2234, 0.2663];
-const ROW_H = 0.0429;
+const ROW_Y: number[] = [0.1850057, 0.22776511, 0.27052452];
+const ROW_H = 0.0431;
 
 function makeId(row: string, col: string): string {
   return `${row}_${col.replace(/[\s.]/g, '_')}`;
