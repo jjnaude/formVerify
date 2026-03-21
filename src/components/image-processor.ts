@@ -3,9 +3,19 @@ import { customElement, property, state } from 'lit/decorators.js';
 import { loadOpenCV } from '../utils/opencv-loader.js';
 import { detectMarkers, type DetectedMarker } from '../pipeline/aruco-detector.js';
 import { correctPerspective, matToBlob } from '../pipeline/perspective.js';
+import { extractROIs } from '../pipeline/roi-extractor.js';
+import { recognizeCells, type OCRResult } from '../pipeline/ocr.js';
+import { MANIFEST_SCHEMA } from '../models/form-schema.js';
 import { getCapture, saveCapture, updateCaptureStatus } from '../utils/db.js';
 
-type ProcessState = 'loading-cv' | 'detecting' | 'correcting' | 'done' | 'error';
+type ProcessState =
+  | 'loading-cv'
+  | 'detecting'
+  | 'correcting'
+  | 'extracting'
+  | 'ocr'
+  | 'done'
+  | 'error';
 
 @customElement('image-processor')
 export class ImageProcessor extends LitElement {
@@ -18,6 +28,7 @@ export class ImageProcessor extends LitElement {
       flex: 1;
       padding: 16px;
       gap: 16px;
+      overflow-y: auto;
     }
 
     .status {
@@ -53,14 +64,14 @@ export class ImageProcessor extends LitElement {
 
     .result-img {
       width: 100%;
-      max-height: 60vh;
+      max-height: 40vh;
       object-fit: contain;
       border: 1px solid #ddd;
       border-radius: 4px;
     }
 
-    .marker-info {
-      font-size: 0.9rem;
+    .info-bar {
+      font-size: 0.85rem;
       color: #333;
       background: #f0f0f0;
       padding: 8px 16px;
@@ -68,9 +79,50 @@ export class ImageProcessor extends LitElement {
       width: 100%;
     }
 
+    .ocr-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.8rem;
+    }
+
+    .ocr-table th,
+    .ocr-table td {
+      border: 1px solid #ddd;
+      padding: 4px 6px;
+      text-align: center;
+    }
+
+    .ocr-table th {
+      background: #e8e8e8;
+      font-size: 0.7rem;
+      position: sticky;
+      top: 0;
+    }
+
+    .ocr-table .row-header {
+      text-align: left;
+      font-weight: bold;
+      background: #f4f4f4;
+    }
+
+    .ocr-table td.has-value {
+      background: #e8f5e9;
+      font-weight: bold;
+    }
+
+    .ocr-table td.low-conf {
+      background: #fff3e0;
+    }
+
+    .table-wrapper {
+      width: 100%;
+      overflow-x: auto;
+    }
+
     .controls {
       display: flex;
       gap: 12px;
+      padding: 8px 0;
     }
 
     button {
@@ -85,16 +137,21 @@ export class ImageProcessor extends LitElement {
       background: #1a73e8;
       color: white;
     }
+
+    .progress {
+      font-size: 0.85rem;
+      color: #1a73e8;
+    }
   `;
 
-  /** IndexedDB capture ID to process. */
   @property({ type: Number }) captureId = 0;
 
   @state() private _processState: ProcessState = 'loading-cv';
   @state() private _error = '';
   @state() private _markers: DetectedMarker[] = [];
   @state() private _resultUrl = '';
-  @state() private _correctedId: number | null = null;
+  @state() private _ocrResults: OCRResult[] = [];
+  @state() private _ocrProgress = '';
 
   connectedCallback(): void {
     super.connectedCallback();
@@ -159,11 +216,21 @@ export class ImageProcessor extends LitElement {
         try {
           // Save corrected image
           const correctedBlob = await matToBlob(cv, result.corrected);
-          this._correctedId = await saveCapture(correctedBlob);
+          await saveCapture(correctedBlob);
           await updateCaptureStatus(this.captureId, 'processed');
-
-          // Show result
           this._resultUrl = URL.createObjectURL(correctedBlob);
+
+          // Extract ROIs
+          this._processState = 'extracting';
+          const allCells = [MANIFEST_SCHEMA.tracking, ...MANIFEST_SCHEMA.table];
+          const rois = extractROIs(cv, result.corrected, allCells);
+
+          // Run OCR
+          this._processState = 'ocr';
+          this._ocrResults = await recognizeCells(rois, (done, total) => {
+            this._ocrProgress = `${done}/${total} cells`;
+          });
+
           this._processState = 'done';
         } finally {
           result.corrected.delete();
@@ -180,7 +247,7 @@ export class ImageProcessor extends LitElement {
   private _done(): void {
     this.dispatchEvent(
       new CustomEvent('processing-complete', {
-        detail: { correctedId: this._correctedId },
+        detail: { results: this._ocrResults },
         bubbles: true,
         composed: true,
       }),
@@ -190,20 +257,15 @@ export class ImageProcessor extends LitElement {
   render() {
     switch (this._processState) {
       case 'loading-cv':
-        return html`
-          <div class="spinner"></div>
-          <p class="status">Loading OpenCV...</p>
-        `;
+        return this._renderSpinner('Loading OpenCV...');
       case 'detecting':
-        return html`
-          <div class="spinner"></div>
-          <p class="status">Detecting ArUco markers...</p>
-        `;
+        return this._renderSpinner('Detecting ArUco markers...');
       case 'correcting':
-        return html`
-          <div class="spinner"></div>
-          <p class="status">Correcting perspective...</p>
-        `;
+        return this._renderSpinner('Correcting perspective...');
+      case 'extracting':
+        return this._renderSpinner('Extracting cells...');
+      case 'ocr':
+        return this._renderSpinner(`Running OCR... ${this._ocrProgress}`);
       case 'error':
         return html`
           <p class="status error">${this._error}</p>
@@ -212,20 +274,79 @@ export class ImageProcessor extends LitElement {
           </div>
         `;
       case 'done':
-        return html`
-          <div class="results">
-            <p class="status">Perspective correction complete</p>
-            <img class="result-img" src=${this._resultUrl} alt="Corrected form" />
-            <div class="marker-info">
-              Detected ${this._markers.length} markers
-              (IDs: ${this._markers.map((m) => m.id).join(', ')})
-            </div>
-            <div class="controls">
-              <button class="done-btn" @click=${this._done}>Done</button>
-            </div>
-          </div>
-        `;
+        return this._renderResults();
     }
+  }
+
+  private _renderSpinner(msg: string) {
+    return html`
+      <div class="spinner"></div>
+      <p class="status">${msg}</p>
+    `;
+  }
+
+  private _renderResults() {
+    const trackingResult = this._ocrResults.find((r) => r.cellId === 'tracking_no');
+    const tableResults = this._ocrResults.filter((r) => r.cellId !== 'tracking_no');
+
+    // Group by row
+    const rows = ['received', 'gross_kg', 'nett_kg'];
+    const columns = MANIFEST_SCHEMA.table
+      .filter((c) => c.row === 'received')
+      .map((c) => c.col);
+
+    return html`
+      <div class="results">
+        <img class="result-img" src=${this._resultUrl} alt="Corrected form" />
+
+        <div class="info-bar">
+          Markers: ${this._markers.length}/4 |
+          Tracking No: <strong>${trackingResult?.text || '—'}</strong>
+        </div>
+
+        <div class="table-wrapper">
+          <table class="ocr-table">
+            <thead>
+              <tr>
+                <th></th>
+                ${columns.map((col) => html`<th>${col}</th>`)}
+              </tr>
+            </thead>
+            <tbody>
+              ${rows.map((row) => {
+                const label =
+                  row === 'received'
+                    ? 'Received'
+                    : row === 'gross_kg'
+                      ? 'Gross KG'
+                      : 'Nett KG';
+                return html`
+                  <tr>
+                    <td class="row-header">${label}</td>
+                    ${columns.map((col) => {
+                      const r = tableResults.find(
+                        (r) => r.row === row && r.col === col,
+                      );
+                      const val = r?.text || '';
+                      const cls = val
+                        ? r!.confidence < 50
+                          ? 'has-value low-conf'
+                          : 'has-value'
+                        : '';
+                      return html`<td class=${cls}>${val || '—'}</td>`;
+                    })}
+                  </tr>
+                `;
+              })}
+            </tbody>
+          </table>
+        </div>
+
+        <div class="controls">
+          <button class="done-btn" @click=${this._done}>Done</button>
+        </div>
+      </div>
+    `;
   }
 }
 
