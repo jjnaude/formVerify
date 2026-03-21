@@ -51,7 +51,8 @@ export function detectMarkers(cv: CV, src: CV): DetectedMarker[] {
 function detectWithNativeAruco(cv: CV, gray: CV): DetectedMarker[] {
   const dictionary = cv.getPredefinedDictionary(cv.DICT_4X4_50);
   const parameters = new cv.aruco_DetectorParameters();
-  const detector = new cv.aruco_ArucoDetector(dictionary, parameters);
+  const refineParams = new cv.aruco_RefineParameters(10, 3, true);
+  const detector = new cv.aruco_ArucoDetector(dictionary, parameters, refineParams);
 
   const corners = new cv.MatVector();
   const ids = new cv.Mat();
@@ -88,6 +89,7 @@ function detectWithNativeAruco(cv: CV, gray: CV): DetectedMarker[] {
     ids.delete();
     rejected.delete();
     detector.delete();
+    refineParams.delete();
     parameters.delete();
     dictionary.delete();
   }
