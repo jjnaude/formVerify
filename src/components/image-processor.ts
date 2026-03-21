@@ -5,7 +5,7 @@ import { detectMarkers, type DetectedMarker } from '../pipeline/aruco-detector.j
 import { correctPerspective, matToBlob } from '../pipeline/perspective.js';
 import { extractROIs } from '../pipeline/roi-extractor.js';
 import { recognizeCells, type OCRResult } from '../pipeline/ocr.js';
-import { MANIFEST_SCHEMA } from '../models/form-schema.js';
+import { MANIFEST_SCHEMA, assembleFieldValues } from '../models/form-schema.js';
 import { getCapture, saveCapture, updateCaptureStatus } from '../utils/db.js';
 
 type ProcessState =
@@ -270,7 +270,7 @@ export class ImageProcessor extends LitElement {
 
           // Extract ROIs
           this._processState = 'extracting';
-          const allCells = [MANIFEST_SCHEMA.tracking, ...MANIFEST_SCHEMA.table];
+          const allCells = [MANIFEST_SCHEMA.tracking, ...MANIFEST_SCHEMA.digitBoxes];
           const rois = extractROIs(cv, result.corrected, allCells);
 
           // Store ROI images for preview
@@ -351,7 +351,7 @@ export class ImageProcessor extends LitElement {
     if (!rawUrl) return nothing;
 
     const result = this._ocrResults.find((r) => r.cellId === this._selectedCellId);
-    const cell = [...MANIFEST_SCHEMA.table, MANIFEST_SCHEMA.tracking].find(
+    const cell = [...MANIFEST_SCHEMA.digitBoxes, MANIFEST_SCHEMA.tracking].find(
       (c) => c.id === this._selectedCellId,
     );
 
@@ -384,12 +384,33 @@ export class ImageProcessor extends LitElement {
 
   private _renderResults() {
     const trackingResult = this._ocrResults.find((r) => r.cellId === 'tracking_no');
-    const tableResults = this._ocrResults.filter((r) => r.cellId !== 'tracking_no');
+    const digitResults = this._ocrResults.filter((r) => r.cellId !== 'tracking_no');
+
+    // Assemble digit results into field values
+    const digitMap = new Map<string, string>();
+    for (const r of digitResults) {
+      digitMap.set(r.cellId, r.text);
+    }
+    const fieldValues = assembleFieldValues(digitMap);
+
+    // Compute average confidence per field
+    const fieldConfidence = new Map<string, number>();
+    const fieldDigits = new Map<string, number[]>();
+    for (const r of digitResults) {
+      const fieldId = r.cellId.replace(/_d\d+$/, '');
+      if (!fieldDigits.has(fieldId)) fieldDigits.set(fieldId, []);
+      fieldDigits.get(fieldId)!.push(r.confidence);
+    }
+    for (const [fieldId, confs] of fieldDigits) {
+      fieldConfidence.set(fieldId, confs.reduce((a, b) => a + b, 0) / confs.length);
+    }
 
     const rows = ['received', 'gross_kg', 'nett_kg'];
-    const columns = MANIFEST_SCHEMA.table
-      .filter((c) => c.row === 'received')
-      .map((c) => c.col);
+    const columns = [
+      '90L RUC', '7.6L Sharps', '20L Sharps', '25L Sharps',
+      '2.5L Specibin', '5L Specibin', '10L Specibin', '20L Specibin',
+      '25L Specibin', 'Pharma 5L', 'Pharma 20L', '50L Box', '142L Box', 'Other',
+    ];
 
     return html`
       <div class="results">
@@ -427,21 +448,19 @@ export class ImageProcessor extends LitElement {
                   <tr>
                     <td class="row-header">${label}</td>
                     ${columns.map((col) => {
-                      const r = tableResults.find(
-                        (r) => r.row === row && r.col === col,
-                      );
-                      const cellSchema = MANIFEST_SCHEMA.table.find(
-                        (c) => c.row === row && c.col === col,
-                      );
-                      const cellId = cellSchema?.id || '';
-                      const val = r?.text || '';
-                      const isSelected = cellId === this._selectedCellId;
+                      const fieldId = `${row}_${col.replace(/[\s.]/g, '_')}`;
+                      const val = fieldValues.get(fieldId) || '';
+                      const conf = fieldConfidence.get(fieldId) ?? 0;
+                      const isSelected = this._selectedCellId.startsWith(fieldId);
+                      // Show first digit box for this field when clicked
+                      const firstBoxId = `${fieldId}_d0`;
                       let cls = 'clickable';
-                      if (val) cls += r!.confidence < 50 ? ' has-value low-conf' : ' has-value';
+                      if (val && val !== '000' && val !== '000,0')
+                        cls += conf < 50 ? ' has-value low-conf' : ' has-value';
                       if (isSelected) cls += ' selected';
                       return html`<td
                         class=${cls}
-                        @click=${() => this._selectCell(cellId)}
+                        @click=${() => this._selectCell(firstBoxId)}
                       >${val || '—'}</td>`;
                     })}
                   </tr>

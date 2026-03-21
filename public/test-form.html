@@ -2,96 +2,124 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>formVerify — Test Form</title>
+<title>formVerify — Test Form v2</title>
 <style>
   @page {
-    size: A4 portrait;
+    size: A4 landscape;
     margin: 0;
   }
   * { box-sizing: border-box; margin: 0; padding: 0; }
-  html, body { width: 210mm; height: 297mm; }
+  html, body { width: 297mm; height: 210mm; }
   body {
     font-family: Arial, Helvetica, sans-serif;
-    padding: 12mm;
+    padding: 8mm;
     position: relative;
   }
 
-  /* ArUco markers — 20mm squares at corners */
+  /* ArUco markers — 15mm squares at corners */
   .marker {
     position: absolute;
-    width: 20mm;
-    height: 20mm;
+    width: 15mm;
+    height: 15mm;
   }
-  .marker.tl { top: 12mm;  left: 12mm; }
-  .marker.tr { top: 12mm;  right: 12mm; }
-  .marker.bl { bottom: 12mm; left: 12mm; }
-  .marker.br { bottom: 12mm; right: 12mm; }
+  .marker.tl { top: 8mm;  left: 8mm; }
+  .marker.tr { top: 8mm;  right: 8mm; }
+  .marker.bl { bottom: 8mm; left: 8mm; }
+  .marker.br { bottom: 8mm; right: 8mm; }
   .marker svg { width: 100%; height: 100%; }
 
-  /* Content area between markers */
   .content {
-    margin: 24mm 0 24mm 0;
-    padding: 0 4mm;
+    margin: 18mm 0 18mm 0;
+    padding: 0 2mm;
   }
 
   h1 {
     text-align: center;
-    font-size: 16pt;
-    margin-bottom: 4mm;
-  }
-  h2 {
-    font-size: 11pt;
-    margin: 4mm 0 2mm 0;
+    font-size: 14pt;
+    margin-bottom: 2mm;
   }
 
   .tracking {
     display: flex;
     align-items: center;
-    gap: 3mm;
-    margin-bottom: 4mm;
-    font-size: 11pt;
+    gap: 2mm;
+    margin-bottom: 3mm;
+    font-size: 10pt;
   }
   .tracking-box {
     border: 0.5pt solid #000;
-    width: 50mm;
-    height: 8mm;
-    display: inline-block;
+    width: 40mm;
+    height: 7mm;
   }
 
+  h2 {
+    font-size: 9pt;
+    margin: 2mm 0 1mm 0;
+  }
+
+  /* Main table */
   table {
     width: 100%;
     border-collapse: collapse;
-    font-size: 9pt;
-    margin-top: 2mm;
-  }
-  th, td {
-    border: 0.5pt solid #000;
-    padding: 1.5mm 1mm;
-    text-align: center;
-    vertical-align: middle;
+    font-size: 7pt;
+    margin-top: 1mm;
   }
   th {
     background: #e8e8e8;
     font-weight: bold;
-    font-size: 7.5pt;
+    border: 0.5pt solid #000;
+    padding: 1mm 0.5mm;
+    text-align: center;
+    vertical-align: middle;
+    font-size: 6.5pt;
   }
   td {
-    height: 10mm;
+    border: 0.5pt solid #000;
+    padding: 0;
+    text-align: center;
+    vertical-align: middle;
   }
   .row-header {
     text-align: left;
     font-weight: bold;
-    font-size: 8pt;
-    width: 18mm;
+    font-size: 7pt;
+    width: 14mm;
     background: #f4f4f4;
+    padding: 1mm;
+  }
+
+  /* Digit box cells */
+  .digit-group {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0;
+    height: 9mm;
+    padding: 0 0.5mm;
+  }
+  .digit-box {
+    width: 6mm;
+    height: 8mm;
+    border: 0.3pt solid #999;
+    display: inline-block;
+  }
+  .digit-box + .digit-box {
+    border-left: 0.3pt solid #999;
+  }
+  .decimal-mark {
+    font-size: 14pt;
+    font-weight: bold;
+    width: 2.5mm;
+    text-align: center;
+    line-height: 8mm;
   }
 
   .instructions {
-    margin-top: 6mm;
-    font-size: 8pt;
+    margin-top: 3mm;
+    font-size: 7pt;
     color: #666;
     text-align: center;
-    line-height: 1.6;
+    line-height: 1.5;
   }
 
   @media print {
@@ -101,75 +129,65 @@
 </head>
 <body>
 
-<!-- ArUco DICT_4X4_50 markers — 6×6 grid (1-cell border + 4×4 data) -->
-<!-- Black cell = filled rect, White cell = no rect. Border is all black. -->
+<!-- ArUco DICT_4X4_50 markers -->
 
-<!-- ID 0 (Top-Left): data = 1,0,0,0 / 1,0,1,1 / 0,1,0,0 / 0,1,1,1 -->
+<!-- ID 0 (Top-Left) -->
 <div class="marker tl">
 <svg viewBox="0 0 6 6" xmlns="http://www.w3.org/2000/svg">
   <rect width="6" height="6" fill="black"/>
-  <!-- white cells: 1=white, 0=black in data. row+1,col+1 offset for border -->
-  <rect x="1" y="1" width="1" height="1" fill="white"/><!-- r0c0=1 -->
-  <!-- r0c1=0 --><!-- r0c2=0 --><!-- r0c3=0 -->
-  <rect x="1" y="2" width="1" height="1" fill="white"/><!-- r1c0=1 -->
-  <!-- r1c1=0 --><rect x="3" y="2" width="1" height="1" fill="white"/><!-- r1c2=1 -->
-  <rect x="4" y="2" width="1" height="1" fill="white"/><!-- r1c3=1 -->
-  <!-- r2c0=0 --><rect x="2" y="3" width="1" height="1" fill="white"/><!-- r2c1=1 -->
-  <!-- r2c2=0 --><!-- r2c3=0 -->
-  <!-- r3c0=0 --><rect x="2" y="4" width="1" height="1" fill="white"/><!-- r3c1=1 -->
-  <rect x="3" y="4" width="1" height="1" fill="white"/><!-- r3c2=1 -->
-  <rect x="4" y="4" width="1" height="1" fill="white"/><!-- r3c3=1 -->
+  <rect x="1" y="1" width="1" height="1" fill="white"/>
+  <rect x="1" y="2" width="1" height="1" fill="white"/>
+  <rect x="3" y="2" width="1" height="1" fill="white"/>
+  <rect x="4" y="2" width="1" height="1" fill="white"/>
+  <rect x="2" y="3" width="1" height="1" fill="white"/>
+  <rect x="2" y="4" width="1" height="1" fill="white"/>
+  <rect x="3" y="4" width="1" height="1" fill="white"/>
+  <rect x="4" y="4" width="1" height="1" fill="white"/>
 </svg>
 </div>
 
-<!-- ID 1 (Top-Right): data = 1,0,1,1 / 0,1,0,0 / 0,1,1,1 / 1,0,0,0 -->
+<!-- ID 1 (Top-Right) -->
 <div class="marker tr">
 <svg viewBox="0 0 6 6" xmlns="http://www.w3.org/2000/svg">
   <rect width="6" height="6" fill="black"/>
-  <rect x="1" y="1" width="1" height="1" fill="white"/><!-- r0c0=1 -->
-  <!-- r0c1=0 --><rect x="3" y="1" width="1" height="1" fill="white"/><!-- r0c2=1 -->
-  <rect x="4" y="1" width="1" height="1" fill="white"/><!-- r0c3=1 -->
-  <!-- r1c0=0 --><rect x="2" y="2" width="1" height="1" fill="white"/><!-- r1c1=1 -->
-  <!-- r1c2=0 --><!-- r1c3=0 -->
-  <!-- r2c0=0 --><rect x="2" y="3" width="1" height="1" fill="white"/><!-- r2c1=1 -->
-  <rect x="3" y="3" width="1" height="1" fill="white"/><!-- r2c2=1 -->
-  <rect x="4" y="3" width="1" height="1" fill="white"/><!-- r2c3=1 -->
-  <rect x="1" y="4" width="1" height="1" fill="white"/><!-- r3c0=1 -->
-  <!-- r3c1=0 --><!-- r3c2=0 --><!-- r3c3=0 -->
+  <rect x="1" y="1" width="1" height="1" fill="white"/>
+  <rect x="3" y="1" width="1" height="1" fill="white"/>
+  <rect x="4" y="1" width="1" height="1" fill="white"/>
+  <rect x="2" y="2" width="1" height="1" fill="white"/>
+  <rect x="2" y="3" width="1" height="1" fill="white"/>
+  <rect x="3" y="3" width="1" height="1" fill="white"/>
+  <rect x="4" y="3" width="1" height="1" fill="white"/>
+  <rect x="1" y="4" width="1" height="1" fill="white"/>
 </svg>
 </div>
 
-<!-- ID 2 (Bottom-Right): data = 0,1,0,0 / 0,1,1,1 / 1,0,0,0 / 1,0,1,1 -->
+<!-- ID 2 (Bottom-Right) -->
 <div class="marker br">
 <svg viewBox="0 0 6 6" xmlns="http://www.w3.org/2000/svg">
   <rect width="6" height="6" fill="black"/>
-  <!-- r0c0=0 --><rect x="2" y="1" width="1" height="1" fill="white"/><!-- r0c1=1 -->
-  <!-- r0c2=0 --><!-- r0c3=0 -->
-  <!-- r1c0=0 --><rect x="2" y="2" width="1" height="1" fill="white"/><!-- r1c1=1 -->
-  <rect x="3" y="2" width="1" height="1" fill="white"/><!-- r1c2=1 -->
-  <rect x="4" y="2" width="1" height="1" fill="white"/><!-- r1c3=1 -->
-  <rect x="1" y="3" width="1" height="1" fill="white"/><!-- r2c0=1 -->
-  <!-- r2c1=0 --><!-- r2c2=0 --><!-- r2c3=0 -->
-  <rect x="1" y="4" width="1" height="1" fill="white"/><!-- r3c0=1 -->
-  <!-- r3c1=0 --><rect x="3" y="4" width="1" height="1" fill="white"/><!-- r3c2=1 -->
-  <rect x="4" y="4" width="1" height="1" fill="white"/><!-- r3c3=1 -->
+  <rect x="2" y="1" width="1" height="1" fill="white"/>
+  <rect x="2" y="2" width="1" height="1" fill="white"/>
+  <rect x="3" y="2" width="1" height="1" fill="white"/>
+  <rect x="4" y="2" width="1" height="1" fill="white"/>
+  <rect x="1" y="3" width="1" height="1" fill="white"/>
+  <rect x="1" y="4" width="1" height="1" fill="white"/>
+  <rect x="3" y="4" width="1" height="1" fill="white"/>
+  <rect x="4" y="4" width="1" height="1" fill="white"/>
 </svg>
 </div>
 
-<!-- ID 3 (Bottom-Left): data = 0,1,1,1 / 1,0,0,0 / 1,0,1,1 / 0,1,0,0 -->
+<!-- ID 3 (Bottom-Left) -->
 <div class="marker bl">
 <svg viewBox="0 0 6 6" xmlns="http://www.w3.org/2000/svg">
   <rect width="6" height="6" fill="black"/>
-  <!-- r0c0=0 --><rect x="2" y="1" width="1" height="1" fill="white"/><!-- r0c1=1 -->
-  <rect x="3" y="1" width="1" height="1" fill="white"/><!-- r0c2=1 -->
-  <rect x="4" y="1" width="1" height="1" fill="white"/><!-- r0c3=1 -->
-  <rect x="1" y="2" width="1" height="1" fill="white"/><!-- r1c0=1 -->
-  <!-- r1c1=0 --><!-- r1c2=0 --><!-- r1c3=0 -->
-  <rect x="1" y="3" width="1" height="1" fill="white"/><!-- r2c0=1 -->
-  <!-- r2c1=0 --><rect x="3" y="3" width="1" height="1" fill="white"/><!-- r2c2=1 -->
-  <rect x="4" y="3" width="1" height="1" fill="white"/><!-- r2c3=1 -->
-  <!-- r3c0=0 --><rect x="2" y="4" width="1" height="1" fill="white"/><!-- r3c1=1 -->
-  <!-- r3c2=0 --><!-- r3c3=0 -->
+  <rect x="2" y="1" width="1" height="1" fill="white"/>
+  <rect x="3" y="1" width="1" height="1" fill="white"/>
+  <rect x="4" y="1" width="1" height="1" fill="white"/>
+  <rect x="1" y="2" width="1" height="1" fill="white"/>
+  <rect x="1" y="3" width="1" height="1" fill="white"/>
+  <rect x="3" y="3" width="1" height="1" fill="white"/>
+  <rect x="4" y="3" width="1" height="1" fill="white"/>
+  <rect x="2" y="4" width="1" height="1" fill="white"/>
 </svg>
 </div>
 
@@ -205,25 +223,62 @@
     <tbody>
       <tr>
         <td class="row-header">Received</td>
-        <td></td><td></td><td></td><td></td><td></td><td></td><td></td>
-        <td></td><td></td><td></td><td></td><td></td><td></td><td></td>
+        <td><div class="digit-group"><div class="digit-box"></div><div class="digit-box"></div><div class="digit-box"></div></div></td>
+        <td><div class="digit-group"><div class="digit-box"></div><div class="digit-box"></div><div class="digit-box"></div></div></td>
+        <td><div class="digit-group"><div class="digit-box"></div><div class="digit-box"></div><div class="digit-box"></div></div></td>
+        <td><div class="digit-group"><div class="digit-box"></div><div class="digit-box"></div><div class="digit-box"></div></div></td>
+        <td><div class="digit-group"><div class="digit-box"></div><div class="digit-box"></div><div class="digit-box"></div></div></td>
+        <td><div class="digit-group"><div class="digit-box"></div><div class="digit-box"></div><div class="digit-box"></div></div></td>
+        <td><div class="digit-group"><div class="digit-box"></div><div class="digit-box"></div><div class="digit-box"></div></div></td>
+        <td><div class="digit-group"><div class="digit-box"></div><div class="digit-box"></div><div class="digit-box"></div></div></td>
+        <td><div class="digit-group"><div class="digit-box"></div><div class="digit-box"></div><div class="digit-box"></div></div></td>
+        <td><div class="digit-group"><div class="digit-box"></div><div class="digit-box"></div><div class="digit-box"></div></div></td>
+        <td><div class="digit-group"><div class="digit-box"></div><div class="digit-box"></div><div class="digit-box"></div></div></td>
+        <td><div class="digit-group"><div class="digit-box"></div><div class="digit-box"></div><div class="digit-box"></div></div></td>
+        <td><div class="digit-group"><div class="digit-box"></div><div class="digit-box"></div><div class="digit-box"></div></div></td>
+        <td><div class="digit-group"><div class="digit-box"></div><div class="digit-box"></div><div class="digit-box"></div></div></td>
       </tr>
       <tr>
         <td class="row-header">Gross KG</td>
-        <td></td><td></td><td></td><td></td><td></td><td></td><td></td>
-        <td></td><td></td><td></td><td></td><td></td><td></td><td></td>
+        <td><div class="digit-group"><div class="digit-box"></div><div class="digit-box"></div><div class="digit-box"></div><span class="decimal-mark">,</span><div class="digit-box"></div></div></td>
+        <td><div class="digit-group"><div class="digit-box"></div><div class="digit-box"></div><div class="digit-box"></div><span class="decimal-mark">,</span><div class="digit-box"></div></div></td>
+        <td><div class="digit-group"><div class="digit-box"></div><div class="digit-box"></div><div class="digit-box"></div><span class="decimal-mark">,</span><div class="digit-box"></div></div></td>
+        <td><div class="digit-group"><div class="digit-box"></div><div class="digit-box"></div><div class="digit-box"></div><span class="decimal-mark">,</span><div class="digit-box"></div></div></td>
+        <td><div class="digit-group"><div class="digit-box"></div><div class="digit-box"></div><div class="digit-box"></div><span class="decimal-mark">,</span><div class="digit-box"></div></div></td>
+        <td><div class="digit-group"><div class="digit-box"></div><div class="digit-box"></div><div class="digit-box"></div><span class="decimal-mark">,</span><div class="digit-box"></div></div></td>
+        <td><div class="digit-group"><div class="digit-box"></div><div class="digit-box"></div><div class="digit-box"></div><span class="decimal-mark">,</span><div class="digit-box"></div></div></td>
+        <td><div class="digit-group"><div class="digit-box"></div><div class="digit-box"></div><div class="digit-box"></div><span class="decimal-mark">,</span><div class="digit-box"></div></div></td>
+        <td><div class="digit-group"><div class="digit-box"></div><div class="digit-box"></div><div class="digit-box"></div><span class="decimal-mark">,</span><div class="digit-box"></div></div></td>
+        <td><div class="digit-group"><div class="digit-box"></div><div class="digit-box"></div><div class="digit-box"></div><span class="decimal-mark">,</span><div class="digit-box"></div></div></td>
+        <td><div class="digit-group"><div class="digit-box"></div><div class="digit-box"></div><div class="digit-box"></div><span class="decimal-mark">,</span><div class="digit-box"></div></div></td>
+        <td><div class="digit-group"><div class="digit-box"></div><div class="digit-box"></div><div class="digit-box"></div><span class="decimal-mark">,</span><div class="digit-box"></div></div></td>
+        <td><div class="digit-group"><div class="digit-box"></div><div class="digit-box"></div><div class="digit-box"></div><span class="decimal-mark">,</span><div class="digit-box"></div></div></td>
+        <td><div class="digit-group"><div class="digit-box"></div><div class="digit-box"></div><div class="digit-box"></div><span class="decimal-mark">,</span><div class="digit-box"></div></div></td>
       </tr>
       <tr>
         <td class="row-header">Nett KG</td>
-        <td></td><td></td><td></td><td></td><td></td><td></td><td></td>
-        <td></td><td></td><td></td><td></td><td></td><td></td><td></td>
+        <td><div class="digit-group"><div class="digit-box"></div><div class="digit-box"></div><div class="digit-box"></div><span class="decimal-mark">,</span><div class="digit-box"></div></div></td>
+        <td><div class="digit-group"><div class="digit-box"></div><div class="digit-box"></div><div class="digit-box"></div><span class="decimal-mark">,</span><div class="digit-box"></div></div></td>
+        <td><div class="digit-group"><div class="digit-box"></div><div class="digit-box"></div><div class="digit-box"></div><span class="decimal-mark">,</span><div class="digit-box"></div></div></td>
+        <td><div class="digit-group"><div class="digit-box"></div><div class="digit-box"></div><div class="digit-box"></div><span class="decimal-mark">,</span><div class="digit-box"></div></div></td>
+        <td><div class="digit-group"><div class="digit-box"></div><div class="digit-box"></div><div class="digit-box"></div><span class="decimal-mark">,</span><div class="digit-box"></div></div></td>
+        <td><div class="digit-group"><div class="digit-box"></div><div class="digit-box"></div><div class="digit-box"></div><span class="decimal-mark">,</span><div class="digit-box"></div></div></td>
+        <td><div class="digit-group"><div class="digit-box"></div><div class="digit-box"></div><div class="digit-box"></div><span class="decimal-mark">,</span><div class="digit-box"></div></div></td>
+        <td><div class="digit-group"><div class="digit-box"></div><div class="digit-box"></div><div class="digit-box"></div><span class="decimal-mark">,</span><div class="digit-box"></div></div></td>
+        <td><div class="digit-group"><div class="digit-box"></div><div class="digit-box"></div><div class="digit-box"></div><span class="decimal-mark">,</span><div class="digit-box"></div></div></td>
+        <td><div class="digit-group"><div class="digit-box"></div><div class="digit-box"></div><div class="digit-box"></div><span class="decimal-mark">,</span><div class="digit-box"></div></div></td>
+        <td><div class="digit-group"><div class="digit-box"></div><div class="digit-box"></div><div class="digit-box"></div><span class="decimal-mark">,</span><div class="digit-box"></div></div></td>
+        <td><div class="digit-group"><div class="digit-box"></div><div class="digit-box"></div><div class="digit-box"></div><span class="decimal-mark">,</span><div class="digit-box"></div></div></td>
+        <td><div class="digit-group"><div class="digit-box"></div><div class="digit-box"></div><div class="digit-box"></div><span class="decimal-mark">,</span><div class="digit-box"></div></div></td>
+        <td><div class="digit-group"><div class="digit-box"></div><div class="digit-box"></div><div class="digit-box"></div><span class="decimal-mark">,</span><div class="digit-box"></div></div></td>
       </tr>
     </tbody>
   </table>
 
   <div class="instructions">
-    formVerify test form — DICT_4X4_50 markers (ID 0=TL, 1=TR, 2=BR, 3=BL)<br>
-    Print at 100% scale on A4. Fill cells with handwritten numbers, then photograph with formVerify.
+    formVerify test form v2 — Landscape A4, DICT_4X4_50 markers (ID 0=TL, 1=TR, 2=BR, 3=BL)<br>
+    Write ONE digit per box. Received = whole numbers (3 digits). Gross/Nett KG = 3 digits + 1 decimal (printed comma separator).<br>
+    Print at 100% scale on A4 landscape.
   </div>
 </div>
 

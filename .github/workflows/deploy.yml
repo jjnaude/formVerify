@@ -24,8 +24,11 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
-      - name: Download OpenCV.js
-        run: mkdir -p public && curl -L -o public/opencv.js "https://cdn.jsdelivr.net/npm/@techstark/opencv-js@4.12.0-release.1/dist/opencv.js"
+      - name: Download OpenCV.js and MNIST model
+        run: |
+          mkdir -p public/models
+          curl -L -o public/opencv.js "https://cdn.jsdelivr.net/npm/@techstark/opencv-js@4.12.0-release.1/dist/opencv.js"
+          curl -L -o public/models/mnist-12-int8.onnx "https://github.com/onnx/models/raw/main/validated/vision/classification/mnist/model/mnist-12-int8.onnx"
       - run: npm run build
       - uses: actions/upload-pages-artifact@v3
         with:

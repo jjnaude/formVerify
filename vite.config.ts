@@ -28,8 +28,20 @@ export default defineConfig({
         ],
       },
       workbox: {
-        globPatterns: ['**/*.{js,css,html,wasm,png}'],
-        maximumFileSizeToCacheInBytes: 15 * 1024 * 1024, // 15MB for OpenCV.js WASM
+        globPatterns: ['**/*.{js,css,html,png,onnx}'],
+        // Exclude large WASM files from precache — they'll be cached at runtime
+        globIgnores: ['**/*.wasm'],
+        maximumFileSizeToCacheInBytes: 15 * 1024 * 1024, // 15MB for OpenCV.js
+        runtimeCaching: [
+          {
+            urlPattern: /\.wasm$/,
+            handler: 'CacheFirst',
+            options: {
+              cacheName: 'wasm-cache',
+              expiration: { maxEntries: 5, maxAgeSeconds: 30 * 24 * 60 * 60 },
+            },
+          },
+        ],
       },
     }),
   ],
