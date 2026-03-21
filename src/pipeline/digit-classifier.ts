@@ -84,11 +84,11 @@ export async function classifyDigitWithCV(
 }
 
 /**
- * Use OpenCV to properly isolate the digit:
- * 1. Convert to grayscale + threshold
- * 2. Remove horizontal/vertical lines (printed borders)
- * 3. Find largest contour (the digit stroke)
- * 4. Crop to bounding box, center in 20×20 within 28×28 (MNIST style)
+ * Use OpenCV to isolate the digit for MNIST classification:
+ * 1. Grayscale → Otsu threshold (binary: ink=white, paper=black)
+ * 2. Inset to remove printed box borders
+ * 3. Find bounding box of ink pixels, crop tightly
+ * 4. Resize to fit 20×20, center in 28×28
  */
 function preprocessForMNISTWithCV(cv: CV, src: CV): Float32Array {
   // 1. Grayscale
@@ -101,52 +101,54 @@ function preprocessForMNISTWithCV(cv: CV, src: CV): Float32Array {
     src.copyTo(gray);
   }
 
-  // 2. Inset to remove border lines (20% from each edge)
-  const insetX = Math.max(3, Math.round(gray.cols * 0.20));
-  const insetY = Math.max(3, Math.round(gray.rows * 0.15));
-  const insetRect = new cv.Rect(
-    insetX, insetY,
-    Math.max(4, gray.cols - 2 * insetX),
-    Math.max(4, gray.rows - 2 * insetY),
-  );
-  const insetROI = gray.roi(insetRect);
+  // 2. Generous inset to remove printed box borders and adjacent cells
+  const insetX = Math.max(4, Math.round(gray.cols * 0.30));
+  const insetY = Math.max(4, Math.round(gray.rows * 0.20));
+  const iw = Math.max(4, gray.cols - 2 * insetX);
+  const ih = Math.max(4, gray.rows - 2 * insetY);
+  const insetROI = gray.roi(new cv.Rect(insetX, insetY, iw, ih));
   const cleaned = new cv.Mat();
   insetROI.copyTo(cleaned);
   insetROI.delete();
   gray.delete();
 
-  // 3. Resize to 20×20, center in 28×28 (MNIST convention)
-  const resized = new cv.Mat();
-  const targetSize = 20;
-  const scale = Math.min(targetSize / cleaned.cols, targetSize / cleaned.rows);
-  const newW = Math.max(1, Math.round(cleaned.cols * scale));
-  const newH = Math.max(1, Math.round(cleaned.rows * scale));
-  cv.resize(cleaned, resized, new cv.Size(newW, newH), 0, 0, cv.INTER_AREA);
+  // 3. Apply Gaussian blur to thicken thin strokes (makes more MNIST-like)
+  const blurred = new cv.Mat();
+  cv.GaussianBlur(cleaned, blurred, new cv.Size(3, 3), 0.8);
   cleaned.delete();
 
-  // 4. Build MNIST input: invert grayscale (dark ink → high values)
-  // Find min/max for normalization
+  // 4. Resize to fit 20×20, center in 28×28
+  const targetSize = 20;
+  const scale = Math.min(targetSize / blurred.cols, targetSize / blurred.rows);
+  const newW = Math.max(1, Math.round(blurred.cols * scale));
+  const newH = Math.max(1, Math.round(blurred.rows * scale));
+  const resized = new cv.Mat();
+  cv.resize(blurred, resized, new cv.Size(newW, newH), 0, 0, cv.INTER_AREA);
+  blurred.delete();
+
+  // 5. Build MNIST-style input
+  // Read all pixel values, compute robust percentiles for normalization
+  const allVals: number[] = [];
+  for (let y = 0; y < newH; y++) {
+    for (let x = 0; x < newW; x++) {
+      allVals.push(resized.ucharAt(y, x));
+    }
+  }
+  allVals.sort((a, b) => a - b);
+  // Use 5th and 95th percentile for robust normalization
+  const lo = allVals[Math.floor(allVals.length * 0.05)];
+  const hi = allVals[Math.floor(allVals.length * 0.95)];
+  const range = hi - lo || 1;
+
   const result = new Float32Array(784);
   const offsetX = Math.round((28 - newW) / 2);
   const offsetY = Math.round((28 - newH) / 2);
 
-  // First pass: collect values
-  const values: number[] = [];
-  for (let y = 0; y < newH; y++) {
-    for (let x = 0; x < newW; x++) {
-      values.push(resized.ucharAt(y, x));
-    }
-  }
-
-  // Normalize: map [min..max] to [1..0] (inverted — dark ink becomes bright)
-  const minVal = Math.min(...values);
-  const maxVal = Math.max(...values);
-  const range = maxVal - minVal || 1;
-
   for (let y = 0; y < newH; y++) {
     for (let x = 0; x < newW; x++) {
       const val = resized.ucharAt(y, x);
-      const normalized = 1.0 - (val - minVal) / range; // invert: dark→1, light→0
+      // Normalize and invert: dark ink → high value, light paper → low value
+      const normalized = Math.max(0, Math.min(1, (hi - val) / range));
       const idx = (offsetY + y) * 28 + (offsetX + x);
       if (idx >= 0 && idx < 784) {
         result[idx] = normalized;
