@@ -24,8 +24,10 @@ export function initClassifier(): Promise<ort.InferenceSession> {
   if (initPromise) return initPromise;
 
   initPromise = (async () => {
-    // Disable WebGL to avoid issues on some mobile browsers
+    // Configure WASM backend
     ort.env.wasm.numThreads = 1;
+    // Use CDN for WASM files to avoid bundling/serving issues
+    ort.env.wasm.wasmPaths = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1/dist/';
 
     const modelUrl = `${import.meta.env.BASE_URL}models/mnist-12-int8.onnx`;
     session = await ort.InferenceSession.create(modelUrl, {

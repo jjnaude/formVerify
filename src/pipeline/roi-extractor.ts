@@ -361,7 +361,7 @@ function findLinePositions(_cv: CV, lineMat: CV, direction: 'horizontal' | 'vert
   return positions;
 }
 
-/** Score rectangular contours and pick the best match. */
+/** Score contours by bounding rect size and position. No vertex count filter. */
 function scoreRects(
   cv: CV,
   contours: CV,
@@ -380,23 +380,23 @@ function scoreRects(
   let bestRect: Rect | null = null;
   let bestScore = Infinity;
   const allRects: Rect[] = [];
-  const approx = new cv.Mat();
 
   for (let i = 0; i < contours.size(); i++) {
     const contour = contours.get(i);
-    const perimeter = cv.arcLength(contour, true);
-    cv.approxPolyDP(contour, approx, 0.05 * perimeter, true);
+    const br = cv.boundingRect(contour);
 
-    // Accept 4-sided polygons (don't require strict convexity)
-    if (approx.rows < 4 || approx.rows > 6) {
-      contour.delete();
+    // Check aspect ratio is roughly rectangular (not a thin line)
+    const aspect = br.width / (br.height || 1);
+    const expectedAspect = expectedW / (expectedH || 1);
+    contour.delete();
+
+    // Filter by size
+    if (br.width < minW || br.width > maxW || br.height < minH || br.height > maxH) {
       continue;
     }
 
-    const br = cv.boundingRect(contour);
-    contour.delete();
-
-    if (br.width < minW || br.width > maxW || br.height < minH || br.height > maxH) {
+    // Filter out contours that span the full search region (outer boundary)
+    if (br.width > regionW * 0.8 && br.height > regionH * 0.8) {
       continue;
     }
 
@@ -412,7 +412,8 @@ function scoreRects(
     const sizeDev =
       Math.abs(br.width - expectedW) / expectedW +
       Math.abs(br.height - expectedH) / expectedH;
-    const score = distFromCenter + sizeDev * 0.5;
+    const aspectDev = Math.abs(aspect - expectedAspect) / expectedAspect;
+    const score = distFromCenter + sizeDev * 0.3 + aspectDev * 0.2;
 
     if (score < bestScore) {
       bestScore = score;
@@ -420,7 +421,6 @@ function scoreRects(
     }
   }
 
-  approx.delete();
   return { rect: bestRect, allRects };
 }
 
