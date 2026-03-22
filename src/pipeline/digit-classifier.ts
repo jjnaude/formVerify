@@ -243,8 +243,14 @@ function findLargestComponent(cv: CV, binary: CV): number {
 }
 
 /**
- * Extract a specific component's mask from a binary image, resize to 20×20,
- * and center in a 28×28 MNIST-format Float32Array.
+ * Extract a component's mask and place it into a 28×28 MNIST frame.
+ *
+ * Strategy to minimize resampling:
+ * 1. Try placing the mask at native resolution into a 26×26 area
+ *    (centered by center of mass at pixel 14,14).
+ * 2. If it doesn't fit, downscale by exactly 2× using 2×2 pixel binning
+ *    (no interpolation artifacts) and try again.
+ * 3. If still doesn't fit after 2× bin, place anyway (clip to 28×28).
  */
 function extractComponentToMNIST(cv: CV, binary: CV, targetLabel: number): Float32Array {
   const labels = new cv.Mat();
@@ -271,55 +277,105 @@ function extractComponentToMNIST(cv: CV, binary: CV, targetLabel: number): Float
   stats.delete();
   centroids.delete();
 
-  // Resize to fit 20×20 (aspect-ratio preserving)
-  const targetSize = 20;
-  const scale = Math.min(targetSize / compW, targetSize / compH);
-  const nw = Math.max(1, Math.round(compW * scale));
-  const nh = Math.max(1, Math.round(compH * scale));
-  const resized = new cv.Mat();
-  cv.resize(mask, resized, new cv.Size(nw, nh), 0, 0, cv.INTER_AREA);
+  // Try placing at native resolution
+  let result = tryPlaceInFrame(mask);
+  if (!result) {
+    // Downscale by exactly 2× using 2×2 pixel binning
+    const half = bin2x(cv, mask);
+    result = tryPlaceInFrame(half);
+    if (!result) {
+      // Force-place (clip to 28×28 bounds)
+      result = forcePlaceInFrame(half);
+    }
+    half.delete();
+  }
+
   mask.delete();
-
-  // Compute center of mass of the resized digit
-  let massX = 0, massY = 0, totalMass = 0;
-  for (let y = 0; y < nh; y++) {
-    for (let x = 0; x < nw; x++) {
-      const v = resized.ucharAt(y, x);
-      if (v > 0) {
-        massX += x * v;
-        massY += y * v;
-        totalMass += v;
-      }
-    }
-  }
-
-  // Center in 28×28 by center of mass (MNIST convention)
-  // The center of mass should land at (14, 14) — the center of the 28×28 frame
-  const result = new Float32Array(784);
-  let offX: number, offY: number;
-  if (totalMass > 0) {
-    const comX = massX / totalMass;
-    const comY = massY / totalMass;
-    offX = Math.round(14 - comX);
-    offY = Math.round(14 - comY);
-  } else {
-    // Fallback to bounding-box centering if no mass
-    offX = Math.round((28 - nw) / 2);
-    offY = Math.round((28 - nh) / 2);
-  }
-
-  for (let y = 0; y < nh; y++) {
-    for (let x = 0; x < nw; x++) {
-      const dx = offX + x;
-      const dy = offY + y;
-      if (dx >= 0 && dx < 28 && dy >= 0 && dy < 28) {
-        result[dy * 28 + dx] = resized.ucharAt(y, x) / 255.0;
-      }
-    }
-  }
-  resized.delete();
-
   return result;
+}
+
+/**
+ * Try to place a mask into a 28×28 frame with its center of mass at (14,14).
+ * Returns the Float32Array if it fits within a 26×26 area (1px border), or null.
+ */
+function tryPlaceInFrame(mask: CV): Float32Array | null {
+  const mh = mask.rows, mw = mask.cols;
+  const { offX, offY } = computeCoMOffset(mask);
+
+  // Check if all pixels fit within 1..26
+  if (offX < 1 || offY < 1 || offX + mw - 1 > 26 || offY + mh - 1 > 26) {
+    return null;
+  }
+
+  const result = new Float32Array(784);
+  for (let y = 0; y < mh; y++) {
+    for (let x = 0; x < mw; x++) {
+      const dx = offX + x, dy = offY + y;
+      result[dy * 28 + dx] = mask.ucharAt(y, x) / 255.0;
+    }
+  }
+  return result;
+}
+
+/**
+ * Force-place a mask into a 28×28 frame, clipping any pixels outside bounds.
+ */
+function forcePlaceInFrame(mask: CV): Float32Array {
+  const mh = mask.rows, mw = mask.cols;
+  const { offX, offY } = computeCoMOffset(mask);
+
+  const result = new Float32Array(784);
+  for (let y = 0; y < mh; y++) {
+    for (let x = 0; x < mw; x++) {
+      const dx = offX + x, dy = offY + y;
+      if (dx >= 0 && dx < 28 && dy >= 0 && dy < 28) {
+        result[dy * 28 + dx] = mask.ucharAt(y, x) / 255.0;
+      }
+    }
+  }
+  return result;
+}
+
+/**
+ * Compute the offset to place a mask's center of mass at (14, 14).
+ */
+function computeCoMOffset(mask: CV): { offX: number; offY: number } {
+  const mh = mask.rows, mw = mask.cols;
+  let massX = 0, massY = 0, totalMass = 0;
+  for (let y = 0; y < mh; y++) {
+    for (let x = 0; x < mw; x++) {
+      const v = mask.ucharAt(y, x);
+      if (v > 0) { massX += x * v; massY += y * v; totalMass += v; }
+    }
+  }
+  if (totalMass > 0) {
+    return {
+      offX: Math.round(14 - massX / totalMass),
+      offY: Math.round(14 - massY / totalMass),
+    };
+  }
+  return {
+    offX: Math.round((28 - mw) / 2),
+    offY: Math.round((28 - mh) / 2),
+  };
+}
+
+/**
+ * Downscale a mask by exactly 2× using 2×2 pixel binning (average of 4 pixels).
+ * Caller must delete the returned Mat.
+ */
+function bin2x(cv: CV, mat: CV): CV {
+  const h = mat.rows, w = mat.cols;
+  const nh = Math.floor(h / 2), nw = Math.floor(w / 2);
+  const out = new cv.Mat(nh, nw, cv.CV_8UC1, new cv.Scalar(0));
+  for (let y = 0; y < nh; y++) {
+    for (let x = 0; x < nw; x++) {
+      const sum = mat.ucharAt(y * 2, x * 2) + mat.ucharAt(y * 2 + 1, x * 2)
+                + mat.ucharAt(y * 2, x * 2 + 1) + mat.ucharAt(y * 2 + 1, x * 2 + 1);
+      out.ucharPtr(y, x)[0] = Math.min(255, Math.round(sum / 4));
+    }
+  }
+  return out;
 }
 
 /**
