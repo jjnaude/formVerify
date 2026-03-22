@@ -133,6 +133,9 @@ export class ImageProcessor extends LitElement {
   @state() private _openDebugStage: DebugStage = '';
   @state() private _debugSelectedCol = 0;
 
+  /** MNIST 28×28 patches keyed by cellId */
+  private _mnistPatches = new Map<string, ImageData>();
+
   /** Cached data URLs for debug images */
   private _debugUrls = new Map<string, string>();
 
@@ -222,15 +225,19 @@ export class ImageProcessor extends LitElement {
           for (let i = 0; i < extraction.digits.length; i++) {
             const d = extraction.digits[i];
             const mat = cv.matFromImageData(d.imageData);
-            const { digit, confidence } = await classifyDigitWithCV(cv, mat);
+            const result = await classifyDigitWithCV(cv, mat);
             mat.delete();
+
+            if (result.mnistPatch) {
+              this._mnistPatches.set(d.cellId, result.mnistPatch);
+            }
 
             digitResults.push({
               cellId: d.cellId,
               row: d.row,
               col: d.col,
-              digit,
-              confidence,
+              digit: result.digit,
+              confidence: result.confidence,
             });
 
             if ((i + 1) % 20 === 0 || i === total - 1) {
@@ -430,6 +437,7 @@ export class ImageProcessor extends LitElement {
                     const cellId = `${fieldId}_d${di}`;
                     const rawImg = debug.digitCrops.get(cellId);
                     const ppImg = debug.digitPreprocessed.get(cellId);
+                    const mnistImg = this._mnistPatches.get(cellId);
                     const result = this._digitResults.find(r => r.cellId === cellId);
                     if (!rawImg) return nothing;
 
@@ -442,6 +450,10 @@ export class ImageProcessor extends LitElement {
                         ${ppImg ? html`
                           <img src=${this._getDebugUrl(`pp_${cellId}`, ppImg)}
                             style="width:34px; height:51px; image-rendering:pixelated; display:block; margin:2px auto 0;" />
+                        ` : nothing}
+                        ${mnistImg ? html`
+                          <img src=${this._getDebugUrl(`mnist_${cellId}`, mnistImg)}
+                            style="width:28px; height:28px; image-rendering:pixelated; display:block; margin:2px auto 0; border:1px solid #aaa;" />
                         ` : nothing}
                         <div style="font-size:0.75rem; font-weight:bold; margin-top:2px;">
                           ${result ? result.digit : '?'}
@@ -504,7 +516,7 @@ export class ImageProcessor extends LitElement {
           Confidence: <strong>${result?.confidence?.toFixed(0) ?? '?'}%</strong>
         </div>
 
-        <div style="display:grid; grid-template-columns:1fr 1fr; gap:6px; width:100%;">
+        <div style="display:grid; grid-template-columns:1fr 1fr 1fr; gap:6px; width:100%;">
           <div style="text-align:center">
             <div style="font-size:0.65rem; color:#999;">Raw crop</div>
             <img class="cell-preview-img" src=${this._getDebugUrl(`raw_${this._selectedCellId}`, rawImg)}
@@ -517,6 +529,16 @@ export class ImageProcessor extends LitElement {
                 alt="Preprocessed" style="width:100%; height:auto; image-rendering:pixelated;" />
             </div>
           ` : nothing}
+          ${(() => {
+            const mnistImg = this._mnistPatches.get(this._selectedCellId);
+            return mnistImg ? html`
+              <div style="text-align:center">
+                <div style="font-size:0.65rem; color:#999;">MNIST input (28x28)</div>
+                <img class="cell-preview-img" src=${this._getDebugUrl(`mnist_${this._selectedCellId}`, mnistImg)}
+                  alt="MNIST patch" style="width:100%; height:auto; image-rendering:pixelated;" />
+              </div>
+            ` : nothing;
+          })()}
         </div>
       </div>
     `;

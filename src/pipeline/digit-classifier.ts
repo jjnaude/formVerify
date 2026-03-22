@@ -13,6 +13,8 @@ type CV = any;
 export interface DigitResult {
   digit: number;
   confidence: number;
+  /** The 28×28 MNIST input patch as ImageData (grayscale rendered to RGBA) */
+  mnistPatch?: ImageData;
 }
 
 let session: ort.InferenceSession | null = null;
@@ -80,7 +82,18 @@ export async function classifyDigitWithCV(
   const digit = probs.indexOf(Math.max(...probs));
   const confidence = probs[digit] * 100;
 
-  return { digit, confidence };
+  // Convert the 28×28 float input to an RGBA ImageData for debug visualization
+  const patchData = new Uint8ClampedArray(28 * 28 * 4);
+  for (let i = 0; i < 784; i++) {
+    const v = Math.round((1 - input[i]) * 255); // invert: MNIST white-on-black → black-on-white
+    patchData[i * 4] = v;
+    patchData[i * 4 + 1] = v;
+    patchData[i * 4 + 2] = v;
+    patchData[i * 4 + 3] = 255;
+  }
+  const mnistPatch = new ImageData(patchData, 28, 28);
+
+  return { digit, confidence, mnistPatch };
 }
 
 /**
