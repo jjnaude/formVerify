@@ -10,6 +10,9 @@ import * as ort from 'onnxruntime-web';
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type CV = any;
 
+/** Model input dimension (32×32 for MNIST+SVHN trained model) */
+const IMG_DIM = 32;
+
 export interface DigitResult {
   digit: number;
   confidence: number;
@@ -31,7 +34,7 @@ export function initClassifier(): Promise<ort.InferenceSession> {
     ort.env.wasm.numThreads = 1;
     ort.env.wasm.wasmPaths = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1/dist/';
 
-    const modelUrl = `${import.meta.env.BASE_URL}models/mnist-8.onnx`;
+    const modelUrl = `${import.meta.env.BASE_URL}models/digit-classifier.onnx`;
     session = await ort.InferenceSession.create(modelUrl, {
       executionProviders: ['wasm'],
     });
@@ -52,9 +55,9 @@ export async function classifyDigit(imageData: ImageData): Promise<DigitResult> 
   const sess = await initClassifier();
   const input = preprocessForMNIST(imageData);
 
-  const tensor = new ort.Tensor('float32', input, [1, 1, 28, 28]);
-  const results = await sess.run({ Input3: tensor });
-  const logits = Array.from(results['Plus214_Output_0'].data as Float32Array);
+  const tensor = new ort.Tensor('float32', input, [1, 1, 32, 32]);
+  const results = await sess.run({ input: tensor });
+  const logits = Array.from(results['logits'].data as Float32Array);
 
   const probs = softmax(logits);
   const digit = probs.indexOf(Math.max(...probs));
@@ -79,24 +82,33 @@ export async function classifyDigitWithCV(
   const sess = await initClassifier();
   const input = preprocessWithCC(cv, cellMat);
 
-  const tensor = new ort.Tensor('float32', input, [1, 1, 28, 28]);
-  const results = await sess.run({ Input3: tensor });
-  const logits = Array.from(results['Plus214_Output_0'].data as Float32Array);
+  // Model expects [-1, 1] normalization: foreground=1→0.5 after normalize, background=0→-0.5
+  // Input from preprocessWithCC is [0, 1] (foreground=1, background=0)
+  // Normalize: (x - 0.5) / 0.5 = 2*x - 1
+  const IMG_SIZE = 32;
+  const normalized = new Float32Array(IMG_SIZE * IMG_SIZE);
+  for (let i = 0; i < normalized.length; i++) {
+    normalized[i] = input[i] * 2 - 1;
+  }
+
+  const tensor = new ort.Tensor('float32', normalized, [1, 1, IMG_SIZE, IMG_SIZE]);
+  const results = await sess.run({ input: tensor });
+  const logits = Array.from(results['logits'].data as Float32Array);
 
   const probs = softmax(logits);
   const digit = probs.indexOf(Math.max(...probs));
   const confidence = probs[digit] * 100;
 
-  // Convert the 28×28 float input to an RGBA ImageData for debug visualization
-  const patchData = new Uint8ClampedArray(28 * 28 * 4);
-  for (let i = 0; i < 784; i++) {
-    const v = Math.round((1 - input[i]) * 255); // invert: MNIST white-on-black → black-on-white
+  // Convert the 32×32 float input to an RGBA ImageData for debug visualization
+  const patchData = new Uint8ClampedArray(IMG_SIZE * IMG_SIZE * 4);
+  for (let i = 0; i < IMG_SIZE * IMG_SIZE; i++) {
+    const v = Math.round((1 - input[i]) * 255); // invert for display: black digit on white bg
     patchData[i * 4] = v;
     patchData[i * 4 + 1] = v;
     patchData[i * 4 + 2] = v;
     patchData[i * 4 + 3] = 255;
   }
-  const mnistPatch = new ImageData(patchData, 28, 28);
+  const mnistPatch = new ImageData(patchData, IMG_SIZE, IMG_SIZE);
 
   return { digit, confidence, mnistPatch };
 }
@@ -296,22 +308,22 @@ function extractComponentToMNIST(cv: CV, binary: CV, targetLabel: number): Float
 
 /**
  * Try to place a mask into a 28×28 frame with its center of mass at (14,14).
- * Returns the Float32Array if it fits within a 26×26 area (1px border), or null.
+ * Returns the Float32Array if it fits within a 30×30 area (1px border in 32×32), or null.
  */
 function tryPlaceInFrame(mask: CV): Float32Array | null {
   const mh = mask.rows, mw = mask.cols;
   const { offX, offY } = computeCoMOffset(mask);
 
-  // Check if all pixels fit within 1..26
-  if (offX < 1 || offY < 1 || offX + mw - 1 > 26 || offY + mh - 1 > 26) {
+  // Check if all pixels fit within 1..30 (leaving 1px border in 32×32 frame)
+  if (offX < 1 || offY < 1 || offX + mw - 1 > 30 || offY + mh - 1 > 30) {
     return null;
   }
 
-  const result = new Float32Array(784);
+  const result = new Float32Array(IMG_DIM * IMG_DIM);
   for (let y = 0; y < mh; y++) {
     for (let x = 0; x < mw; x++) {
       const dx = offX + x, dy = offY + y;
-      result[dy * 28 + dx] = mask.ucharAt(y, x) / 255.0;
+      result[dy * IMG_DIM + dx] = mask.ucharAt(y, x) / 255.0;
     }
   }
   return result;
@@ -324,12 +336,12 @@ function forcePlaceInFrame(mask: CV): Float32Array {
   const mh = mask.rows, mw = mask.cols;
   const { offX, offY } = computeCoMOffset(mask);
 
-  const result = new Float32Array(784);
+  const result = new Float32Array(IMG_DIM * IMG_DIM);
   for (let y = 0; y < mh; y++) {
     for (let x = 0; x < mw; x++) {
       const dx = offX + x, dy = offY + y;
-      if (dx >= 0 && dx < 28 && dy >= 0 && dy < 28) {
-        result[dy * 28 + dx] = mask.ucharAt(y, x) / 255.0;
+      if (dx >= 0 && dx < IMG_DIM && dy >= 0 && dy < IMG_DIM) {
+        result[dy * IMG_DIM + dx] = mask.ucharAt(y, x) / 255.0;
       }
     }
   }
@@ -348,15 +360,16 @@ function computeCoMOffset(mask: CV): { offX: number; offY: number } {
       if (v > 0) { massX += x * v; massY += y * v; totalMass += v; }
     }
   }
+  const center = IMG_DIM / 2; // 16 for 32×32
   if (totalMass > 0) {
     return {
-      offX: Math.round(14 - massX / totalMass),
-      offY: Math.round(14 - massY / totalMass),
+      offX: Math.round(center - massX / totalMass),
+      offY: Math.round(center - massY / totalMass),
     };
   }
   return {
-    offX: Math.round((28 - mw) / 2),
-    offY: Math.round((28 - mh) / 2),
+    offX: Math.round((IMG_DIM - mw) / 2),
+    offY: Math.round((IMG_DIM - mh) / 2),
   };
 }
 
