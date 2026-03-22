@@ -115,10 +115,11 @@ export function columnExtract(cv: CV, corrected: CV): ColumnExtractionResult {
       const colW = colRight - colLeft;
 
       // Generate column crop with overlays for debug
-      const colCropDebug = createColumnDebugImage(cv, corrected, colLeft, colW, tableTop, tableBot, rowBounds);
+      const colCropDebug = createColumnDebugImage(cv, corrected, colLeft, colW, avgColWidth, tableTop, tableBot, rowBounds);
       columnCrops.set(ci, colCropDebug);
 
       // Extract digit boxes
+      // Always use avgColWidth for centering so narrow last column doesn't shift boxes
       for (let ri = 0; ri < 3; ri++) {
         const rowTop = rowBounds[ri];
         const rowBot = rowBounds[ri + 1];
@@ -134,8 +135,8 @@ export function columnExtract(cv: CV, corrected: CV): ColumnExtractionResult {
           groupW = 2 * DIGIT_STRIDE + BOX_W;
         }
 
-        // Center horizontally and vertically
-        const startX = colLeft + (colW - groupW) / 2;
+        // Center horizontally using avgColWidth (not actual colW)
+        const startX = colLeft + (avgColWidth - groupW) / 2;
         const boxY = rowTop + (rowH - BOX_H) / 2;
 
         let xOff = 0;
@@ -412,6 +413,7 @@ function createColumnDebugImage(
   corrected: CV,
   colLeft: number,
   colW: number,
+  avgColWidth: number,
   tableTop: number,
   tableBot: number,
   rowBounds: number[],
@@ -419,19 +421,29 @@ function createColumnDebugImage(
   const colH = tableBot - tableTop;
   const clampedW = Math.min(colW, IMG_W - colLeft);
 
+  // If the crop is narrower than avgColWidth, pad with white to maintain consistent sizing
+  const targetW = Math.max(clampedW, avgColWidth);
   const colROI = corrected.roi(new cv.Rect(Math.round(colLeft), tableTop, Math.round(clampedW), colH));
-  const vis = new cv.Mat();
-  colROI.copyTo(vis);
+  let vis: CV;
+  if (clampedW < avgColWidth) {
+    vis = new cv.Mat(colH, targetW, corrected.type(), new cv.Scalar(255, 255, 255, 255));
+    const destROI = vis.roi(new cv.Rect(0, 0, clampedW, colH));
+    colROI.copyTo(destROI);
+    destROI.delete();
+  } else {
+    vis = new cv.Mat();
+    colROI.copyTo(vis);
+  }
   colROI.delete();
 
   // Draw row boundaries as cyan lines
   for (const ry of rowBounds) {
     const localY = ry - tableTop;
-    cv.line(vis, new cv.Point(0, localY), new cv.Point(clampedW, localY),
+    cv.line(vis, new cv.Point(0, localY), new cv.Point(targetW, localY),
       new cv.Scalar(0, 255, 255, 255), 1);
   }
 
-  // Draw digit box overlays
+  // Draw digit box overlays — use avgColWidth for centering
   for (let ri = 0; ri < 3; ri++) {
     const rowTop = rowBounds[ri] - tableTop;
     const rowBot = rowBounds[ri + 1] - tableTop;
@@ -445,7 +457,7 @@ function createColumnDebugImage(
     } else {
       groupW = 2 * DIGIT_STRIDE + BOX_W;
     }
-    const startX = (clampedW - groupW) / 2;
+    const startX = (avgColWidth - groupW) / 2;
     const boxY = rowTop + (rowH - BOX_H) / 2;
 
     let xOff = 0;
