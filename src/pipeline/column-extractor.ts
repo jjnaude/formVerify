@@ -475,21 +475,22 @@ function createColumnDebugImage(
 // --- Utility ---
 
 function matToImageData(cv: CV, mat: CV): ImageData {
-  let rgba: CV;
+  // Always clone to a new continuous mat to handle ROI submats correctly
+  // (ROI .data returns garbled data because of stride/offset into parent buffer)
+  const continuous = new cv.Mat();
   if (mat.channels() === 1) {
-    rgba = new cv.Mat();
-    cv.cvtColor(mat, rgba, cv.COLOR_GRAY2RGBA);
+    cv.cvtColor(mat, continuous, cv.COLOR_GRAY2RGBA);
   } else if (mat.channels() === 3) {
-    rgba = new cv.Mat();
-    cv.cvtColor(mat, rgba, cv.COLOR_RGB2RGBA);
+    cv.cvtColor(mat, continuous, cv.COLOR_RGB2RGBA);
   } else {
-    rgba = mat;
+    mat.copyTo(continuous);
   }
+  // Copy pixel data out of the WASM heap before deleting the mat
   const data = new ImageData(
-    new Uint8ClampedArray(rgba.data),
-    rgba.cols,
-    rgba.rows,
+    new Uint8ClampedArray(continuous.data.slice()),
+    continuous.cols,
+    continuous.rows,
   );
-  if (rgba !== mat) rgba.delete();
+  continuous.delete();
   return data;
 }
