@@ -64,15 +64,20 @@ export async function classifyDigit(imageData: ImageData): Promise<DigitResult> 
 }
 
 /**
- * Classify using OpenCV for better digit isolation.
- * This version uses cv to remove borders via morphology before classifying.
+ * Classify using OpenCV with connected component isolation.
+ *
+ * 1. Binarize with adaptive threshold
+ * 2. Find connected components
+ * 3. If an isolated component (not touching any edge) exists, extract its mask
+ * 4. Resize mask to fit 20×20, center in 28×28
+ * 5. Fall back to inset+grayscale if no isolated component found
  */
 export async function classifyDigitWithCV(
   cv: CV,
   cellMat: CV,
 ): Promise<DigitResult> {
   const sess = await initClassifier();
-  const input = preprocessForMNISTWithCV(cv, cellMat);
+  const input = preprocessWithCC(cv, cellMat);
 
   const tensor = new ort.Tensor('float32', input, [1, 1, 28, 28]);
   const results = await sess.run({ Input3: tensor });
@@ -97,13 +102,16 @@ export async function classifyDigitWithCV(
 }
 
 /**
- * Use OpenCV to isolate the digit for MNIST classification:
- * 1. Grayscale → Otsu threshold (binary: ink=white, paper=black)
- * 2. Inset to remove printed box borders
- * 3. Find bounding box of ink pixels, crop tightly
- * 4. Resize to fit 20×20, center in 28×28
+ * Connected-component-based preprocessing for MNIST.
+ *
+ * Tries to find an isolated digit component (not touching any edge of the cell).
+ * If found, extracts the component MASK (binary pixels only for that component),
+ * resizes to 20×20 and centers in 28×28. This cleanly removes box borders and
+ * adjacent cell bleed-through.
+ *
+ * Falls back to the old inset+grayscale approach if no isolated component exists.
  */
-function preprocessForMNISTWithCV(cv: CV, src: CV): Float32Array {
+function preprocessWithCC(cv: CV, src: CV): Float32Array {
   // 1. Grayscale
   const gray = new cv.Mat();
   if (src.channels() === 4) {
@@ -114,7 +122,98 @@ function preprocessForMNISTWithCV(cv: CV, src: CV): Float32Array {
     src.copyTo(gray);
   }
 
-  // 2. Generous inset to remove printed box borders and adjacent cells
+  // 2. Adaptive threshold → binary (ink=255, paper=0)
+  const binary = new cv.Mat();
+  cv.adaptiveThreshold(gray, binary, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C,
+    cv.THRESH_BINARY_INV, 15, 10);
+
+  // 3. Connected components with stats
+  const labels = new cv.Mat();
+  const stats = new cv.Mat();
+  const centroids = new cv.Mat();
+  const numLabels = cv.connectedComponentsWithStats(binary, labels, stats, centroids);
+
+  const w = binary.cols, h = binary.rows;
+  const minArea = w * h * 0.05;
+
+  // Find the largest non-edge-touching component
+  let bestLabel = -1;
+  let bestArea = 0;
+  for (let label = 1; label < numLabels; label++) {
+    const left = stats.intAt(label, cv.CC_STAT_LEFT);
+    const top = stats.intAt(label, cv.CC_STAT_TOP);
+    const cw = stats.intAt(label, cv.CC_STAT_WIDTH);
+    const ch = stats.intAt(label, cv.CC_STAT_HEIGHT);
+    const area = stats.intAt(label, cv.CC_STAT_AREA);
+
+    if (area < minArea) continue;
+    const touchesEdge = (left <= 0 || top <= 0 || left + cw >= w || top + ch >= h);
+    if (!touchesEdge && area > bestArea) {
+      bestLabel = label;
+      bestArea = area;
+    }
+  }
+
+  let result: Float32Array;
+
+  if (bestLabel >= 0) {
+    // Extract the component mask: only pixels belonging to this label
+    const compLeft = stats.intAt(bestLabel, cv.CC_STAT_LEFT);
+    const compTop = stats.intAt(bestLabel, cv.CC_STAT_TOP);
+    const compW = stats.intAt(bestLabel, cv.CC_STAT_WIDTH);
+    const compH = stats.intAt(bestLabel, cv.CC_STAT_HEIGHT);
+
+    // Build a mask image of just this component's bounding box
+    const mask = new cv.Mat(compH, compW, cv.CV_8UC1, new cv.Scalar(0));
+    for (let y = 0; y < compH; y++) {
+      for (let x = 0; x < compW; x++) {
+        if (labels.intAt(compTop + y, compLeft + x) === bestLabel) {
+          mask.ucharPtr(y, x)[0] = 255;
+        }
+      }
+    }
+
+    // Resize mask to fit 20×20
+    const targetSize = 20;
+    const scale = Math.min(targetSize / compW, targetSize / compH);
+    const nw = Math.max(1, Math.round(compW * scale));
+    const nh = Math.max(1, Math.round(compH * scale));
+    const resized = new cv.Mat();
+    cv.resize(mask, resized, new cv.Size(nw, nh), 0, 0, cv.INTER_AREA);
+    mask.delete();
+
+    // Center in 28×28, MNIST format (white ink on black background)
+    result = new Float32Array(784);
+    const offX = Math.round((28 - nw) / 2);
+    const offY = Math.round((28 - nh) / 2);
+    for (let y = 0; y < nh; y++) {
+      for (let x = 0; x < nw; x++) {
+        const idx = (offY + y) * 28 + (offX + x);
+        if (idx >= 0 && idx < 784) {
+          result[idx] = resized.ucharAt(y, x) / 255.0;
+        }
+      }
+    }
+    resized.delete();
+  } else {
+    // Fallback: old inset+grayscale approach for edge-touching digits
+    result = preprocessFallback(cv, gray);
+  }
+
+  labels.delete();
+  stats.delete();
+  centroids.delete();
+  binary.delete();
+  gray.delete();
+
+  return result;
+}
+
+/**
+ * Fallback preprocessing when no isolated component is found.
+ * Uses generous inset + grayscale normalization.
+ */
+function preprocessFallback(cv: CV, gray: CV): Float32Array {
   const insetX = Math.max(4, Math.round(gray.cols * 0.30));
   const insetY = Math.max(4, Math.round(gray.rows * 0.20));
   const iw = Math.max(4, gray.cols - 2 * insetX);
@@ -123,14 +222,11 @@ function preprocessForMNISTWithCV(cv: CV, src: CV): Float32Array {
   const cleaned = new cv.Mat();
   insetROI.copyTo(cleaned);
   insetROI.delete();
-  gray.delete();
 
-  // 3. Apply Gaussian blur to thicken thin strokes (makes more MNIST-like)
   const blurred = new cv.Mat();
   cv.GaussianBlur(cleaned, blurred, new cv.Size(3, 3), 0.8);
   cleaned.delete();
 
-  // 4. Resize to fit 20×20, center in 28×28
   const targetSize = 20;
   const scale = Math.min(targetSize / blurred.cols, targetSize / blurred.rows);
   const newW = Math.max(1, Math.round(blurred.cols * scale));
@@ -139,8 +235,6 @@ function preprocessForMNISTWithCV(cv: CV, src: CV): Float32Array {
   cv.resize(blurred, resized, new cv.Size(newW, newH), 0, 0, cv.INTER_AREA);
   blurred.delete();
 
-  // 5. Build MNIST-style input
-  // Read all pixel values, compute robust percentiles for normalization
   const allVals: number[] = [];
   for (let y = 0; y < newH; y++) {
     for (let x = 0; x < newW; x++) {
@@ -148,7 +242,6 @@ function preprocessForMNISTWithCV(cv: CV, src: CV): Float32Array {
     }
   }
   allVals.sort((a, b) => a - b);
-  // Use 5th and 95th percentile for robust normalization
   const lo = allVals[Math.floor(allVals.length * 0.05)];
   const hi = allVals[Math.floor(allVals.length * 0.95)];
   const range = hi - lo || 1;
@@ -160,7 +253,6 @@ function preprocessForMNISTWithCV(cv: CV, src: CV): Float32Array {
   for (let y = 0; y < newH; y++) {
     for (let x = 0; x < newW; x++) {
       const val = resized.ucharAt(y, x);
-      // Normalize and invert: dark ink → high value, light paper → low value
       const normalized = Math.max(0, Math.min(1, (hi - val) / range));
       const idx = (offsetY + y) * 28 + (offsetX + x);
       if (idx >= 0 && idx < 784) {
@@ -170,7 +262,6 @@ function preprocessForMNISTWithCV(cv: CV, src: CV): Float32Array {
   }
 
   resized.delete();
-
   return result;
 }
 
