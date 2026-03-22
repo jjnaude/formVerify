@@ -228,187 +228,148 @@ for (let gi = 0; gi < groundTruth.length; gi++) {
     const session = window.__session;
     const corrected = window.__corrected;
 
+    // --- Helper: find largest non-edge-touching component ---
+    function findIsolated(bin) {
+      const labels = new cv.Mat(); const stats = new cv.Mat(); const centroids = new cv.Mat();
+      const n = cv.connectedComponentsWithStats(bin, labels, stats, centroids);
+      const w = bin.cols, h = bin.rows, minArea = w * h * 0.05;
+      let best = -1, bestArea = 0;
+      for (let l = 1; l < n; l++) {
+        const left = stats.intAt(l, cv.CC_STAT_LEFT), top = stats.intAt(l, cv.CC_STAT_TOP);
+        const cw = stats.intAt(l, cv.CC_STAT_WIDTH), ch = stats.intAt(l, cv.CC_STAT_HEIGHT);
+        const area = stats.intAt(l, cv.CC_STAT_AREA);
+        if (area < minArea) continue;
+        if (left <= 0 || top <= 0 || left+cw >= w || top+ch >= h) continue;
+        if (area > bestArea) { best = l; bestArea = area; }
+      }
+      labels.delete(); stats.delete(); centroids.delete();
+      return best;
+    }
+
+    // --- Helper: find largest component (any) ---
+    function findLargest(bin) {
+      const labels = new cv.Mat(); const stats = new cv.Mat(); const centroids = new cv.Mat();
+      const n = cv.connectedComponentsWithStats(bin, labels, stats, centroids);
+      let best = -1, bestArea = 0;
+      for (let l = 1; l < n; l++) {
+        const area = stats.intAt(l, cv.CC_STAT_AREA);
+        if (area > bestArea) { best = l; bestArea = area; }
+      }
+      labels.delete(); stats.delete(); centroids.delete();
+      return best;
+    }
+
+    // --- Helper: extract component mask → 28×28 MNIST input ---
+    function extractToMNIST(bin, label) {
+      const labels = new cv.Mat(); const stats = new cv.Mat(); const centroids = new cv.Mat();
+      cv.connectedComponentsWithStats(bin, labels, stats, centroids);
+      const cl = stats.intAt(label, cv.CC_STAT_LEFT), ct = stats.intAt(label, cv.CC_STAT_TOP);
+      const cw = stats.intAt(label, cv.CC_STAT_WIDTH), ch = stats.intAt(label, cv.CC_STAT_HEIGHT);
+      const mask = new cv.Mat(ch, cw, cv.CV_8UC1, new cv.Scalar(0));
+      for (let y = 0; y < ch; y++)
+        for (let x = 0; x < cw; x++)
+          if (labels.intAt(ct+y, cl+x) === label) mask.ucharPtr(y, x)[0] = 255;
+      labels.delete(); stats.delete(); centroids.delete();
+      const scale = Math.min(20/cw, 20/ch);
+      const nw = Math.max(1, Math.round(cw*scale)), nh = Math.max(1, Math.round(ch*scale));
+      const resized = new cv.Mat();
+      cv.resize(mask, resized, new cv.Size(nw, nh), 0, 0, cv.INTER_AREA);
+      mask.delete();
+      const input = new Float32Array(784);
+      const offX = Math.round((28-nw)/2), offY = Math.round((28-nh)/2);
+      for (let y = 0; y < nh; y++)
+        for (let x = 0; x < nw; x++) {
+          const idx = (offY+y)*28+(offX+x);
+          if (idx >= 0 && idx < 784) input[idx] = resized.ucharAt(y, x) / 255.0;
+        }
+      resized.delete();
+      return input;
+    }
+
+    // --- Helper: classify a Float32Array input ---
+    async function classify(input) {
+      const tensor = new ort.Tensor('float32', input, [1, 1, 28, 28]);
+      const results = await session.run({ Input3: tensor });
+      const logits = Array.from(results['Plus214_Output_0'].data);
+      const max = Math.max(...logits);
+      const exps = logits.map(l => Math.exp(l - max));
+      const sum = exps.reduce((a, b) => a + b, 0);
+      const probs = exps.map(e => e / sum);
+      const digit = probs.indexOf(Math.max(...probs));
+      return { digit, confidence: probs[digit] * 100 };
+    }
+
     // Crop digit box
     const roi = corrected.roi(new cv.Rect(bx, by, bw, bh));
     const crop = new cv.Mat(); roi.copyTo(crop); roi.delete();
 
-    // Grayscale
+    // Grayscale → binarize
     const gray = new cv.Mat();
     cv.cvtColor(crop, gray, cv.COLOR_RGBA2GRAY);
     crop.delete();
-
-    // Adaptive threshold → binary (ink=255, paper=0)
     const binary = new cv.Mat();
     cv.adaptiveThreshold(gray, binary, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C,
       cv.THRESH_BINARY_INV, 15, 10);
     gray.delete();
 
-    // Connected components with stats
-    const labels = new cv.Mat();
-    const stats = new cv.Mat();
-    const centroids = new cv.Mat();
-    const numLabels = cv.connectedComponentsWithStats(binary, labels, stats, centroids);
-
-    // Find components that do NOT touch any edge
     const w = binary.cols, h = binary.rows;
-    const isolated = [];
-    for (let label = 1; label < numLabels; label++) { // skip background (0)
-      const left = stats.intAt(label, cv.CC_STAT_LEFT);
-      const top = stats.intAt(label, cv.CC_STAT_TOP);
-      const cw = stats.intAt(label, cv.CC_STAT_WIDTH);
-      const ch = stats.intAt(label, cv.CC_STAT_HEIGHT);
-      const area = stats.intAt(label, cv.CC_STAT_AREA);
-      const right = left + cw;
-      const bottom = top + ch;
 
-      const touchesEdge = (left <= 0 || top <= 0 || right >= w || bottom >= h);
-      // Filter tiny noise components (< 5% of box area)
-      const minArea = w * h * 0.05;
-      if (area >= minArea) {
-        isolated.push({ label, left, top, w: cw, h: ch, area, touchesEdge });
-      }
-    }
-
-    // Find the largest non-edge-touching component (the digit)
-    const nonTouching = isolated.filter(c => !c.touchesEdge);
-    const isIsolated = nonTouching.length > 0;
-
+    // Pass 1: try to find an isolated component
+    let bestLabel = findIsolated(binary);
+    let isIsolated = bestLabel >= 0;
+    let method = isIsolated ? 'isolated' : '';
     let digit = -1, confidence = 0;
 
-    if (isIsolated) {
-      // Use the largest non-touching component
-      nonTouching.sort((a, b) => b.area - a.area);
-      const comp = nonTouching[0];
-
-      // Extract component mask
-      const mask = new cv.Mat(h, w, cv.CV_8UC1, new cv.Scalar(0));
-      for (let y = 0; y < h; y++) {
-        for (let x = 0; x < w; x++) {
-          if (labels.intAt(y, x) === comp.label) {
-            mask.ucharPtr(y, x)[0] = 255;
-          }
-        }
-      }
-
-      // Crop to component bounding box
-      const compCrop = mask.roi(new cv.Rect(comp.left, comp.top, comp.w, comp.h));
-      const compMat = new cv.Mat(); compCrop.copyTo(compMat); compCrop.delete();
-      mask.delete();
-
-      // Resize to fit 20×20 centered in 28×28
-      const targetSize = 20;
-      const scale = Math.min(targetSize / compMat.cols, targetSize / compMat.rows);
-      const nw = Math.max(1, Math.round(compMat.cols * scale));
-      const nh = Math.max(1, Math.round(compMat.rows * scale));
-      const resized = new cv.Mat();
-      cv.resize(compMat, resized, new cv.Size(nw, nh), 0, 0, cv.INTER_AREA);
-      compMat.delete();
-
-      // Build 28×28 MNIST input
-      const input = new Float32Array(784);
-      const offX = Math.round((28 - nw) / 2);
-      const offY = Math.round((28 - nh) / 2);
-      for (let y = 0; y < nh; y++) {
-        for (let x = 0; x < nw; x++) {
-          const val = resized.ucharAt(y, x) / 255.0;
-          const idx = (offY + y) * 28 + (offX + x);
-          if (idx >= 0 && idx < 784) input[idx] = val;
-        }
-      }
-      resized.delete();
-
-      // Classify
-      const tensor = new ort.Tensor('float32', input, [1, 1, 28, 28]);
-      const results = await session.run({ Input3: tensor });
-      const logits = Array.from(results['Plus214_Output_0'].data);
-      const max = Math.max(...logits);
-      const exps = logits.map(l => Math.exp(l - max));
-      const sum = exps.reduce((a, b) => a + b, 0);
-      const probs = exps.map(e => e / sum);
-      digit = probs.indexOf(Math.max(...probs));
-      confidence = probs[digit] * 100;
+    if (bestLabel >= 0) {
+      const input = extractToMNIST(binary, bestLabel);
+      const r = await classify(input);
+      digit = r.digit; confidence = r.confidence;
     } else {
-      // Fallback: use old approach (full crop, inset, classify)
-      const grayFull = new cv.Mat();
-      const roiFull = corrected.roi(new cv.Rect(bx, by, bw, bh));
-      cv.cvtColor(roiFull, grayFull, cv.COLOR_RGBA2GRAY);
-      roiFull.delete();
+      // Pass 2: force separation — clear pixels one row/col in from each edge
+      const separated = new cv.Mat(); binary.copyTo(separated);
+      for (let x = 0; x < w; x++) { separated.ucharPtr(1, x)[0] = 0; separated.ucharPtr(h-2, x)[0] = 0; }
+      for (let y = 0; y < h; y++) { separated.ucharPtr(y, 1)[0] = 0; separated.ucharPtr(y, w-2)[0] = 0; }
 
-      const inX = Math.max(4, Math.round(grayFull.cols * 0.30));
-      const inY = Math.max(4, Math.round(grayFull.rows * 0.20));
-      const iw2 = Math.max(4, grayFull.cols - 2*inX);
-      const ih2 = Math.max(4, grayFull.rows - 2*inY);
-      const inROI = grayFull.roi(new cv.Rect(inX, inY, iw2, ih2));
-      const cleaned = new cv.Mat(); inROI.copyTo(cleaned); inROI.delete(); grayFull.delete();
-
-      const blurred = new cv.Mat();
-      cv.GaussianBlur(cleaned, blurred, new cv.Size(3,3), 0.8);
-      cleaned.delete();
-
-      const targetSize = 20;
-      const scale = Math.min(targetSize / blurred.cols, targetSize / blurred.rows);
-      const nw = Math.max(1, Math.round(blurred.cols * scale));
-      const nh = Math.max(1, Math.round(blurred.rows * scale));
-      const resized = new cv.Mat();
-      cv.resize(blurred, resized, new cv.Size(nw, nh), 0, 0, cv.INTER_AREA);
-      blurred.delete();
-
-      const allVals = [];
-      for (let y=0;y<nh;y++) for(let x=0;x<nw;x++) allVals.push(resized.ucharAt(y,x));
-      allVals.sort((a,b)=>a-b);
-      const lo=allVals[Math.floor(allVals.length*0.05)];
-      const hi=allVals[Math.floor(allVals.length*0.95)];
-      const range=hi-lo||1;
-
-      const input = new Float32Array(784);
-      const offX = Math.round((28-nw)/2);
-      const offY = Math.round((28-nh)/2);
-      for(let y=0;y<nh;y++) for(let x=0;x<nw;x++){
-        const val=resized.ucharAt(y,x);
-        const norm=Math.max(0,Math.min(1,(hi-val)/range));
-        const idx=(offY+y)*28+(offX+x);
-        if(idx>=0&&idx<784) input[idx]=norm;
+      bestLabel = findIsolated(separated);
+      if (bestLabel >= 0) {
+        method = 'separated';
+        const input = extractToMNIST(separated, bestLabel);
+        const r = await classify(input);
+        digit = r.digit; confidence = r.confidence;
+      } else {
+        // Fallback: largest component regardless
+        method = 'fallback';
+        bestLabel = findLargest(separated);
+        if (bestLabel >= 0) {
+          const input = extractToMNIST(separated, bestLabel);
+          const r = await classify(input);
+          digit = r.digit; confidence = r.confidence;
+        }
       }
-      resized.delete();
-
-      const tensor = new ort.Tensor('float32', input, [1, 1, 28, 28]);
-      const results = await session.run({ Input3: tensor });
-      const logits = Array.from(results['Plus214_Output_0'].data);
-      const max = Math.max(...logits);
-      const exps = logits.map(l => Math.exp(l - max));
-      const sum = exps.reduce((a, b) => a + b, 0);
-      const probs = exps.map(e => e / sum);
-      digit = probs.indexOf(Math.max(...probs));
-      confidence = probs[digit] * 100;
+      separated.delete();
     }
 
-    labels.delete(); stats.delete(); centroids.delete(); binary.delete();
+    binary.delete();
 
     return {
       digit, confidence: Math.round(confidence),
-      isIsolated,
-      numComponents: isolated.length,
-      numNonTouching: nonTouching ? nonTouching.length : 0,
+      isIsolated, method,
     };
   }, { bx, by, bw: BOX_W, bh: BOX_H, cellId: gt.cellId, saveFirst20: gi < 20 });
 
   const correct = result.digit === gt.expected;
   totalCorrect += correct ? 1 : 0;
-  if (result.isIsolated) {
-    isolatedCount++;
-    if (correct) isolatedCorrect++;
-  } else {
-    touchingCount++;
-    if (correct) touchingCorrect++;
-  }
+
+  const method = result.method || 'unknown';
+  if (method === 'isolated') { isolatedCount++; if (correct) isolatedCorrect++; }
+  else { touchingCount++; if (correct) touchingCorrect++; }
 
   results.push({
     ...gt,
     predicted: result.digit,
     confidence: result.confidence,
     correct,
-    isIsolated: result.isIsolated,
-    numComponents: result.numComponents,
+    method,
   });
 
   if ((gi + 1) % 20 === 0) process.stdout.write(`\r  ${gi+1}/${groundTruth.length}...`);
@@ -418,43 +379,52 @@ await page.evaluate(() => { window.__corrected.delete(); window.__gray.delete();
 await browser.close();
 
 // --- Report ---
+const methods = { isolated: 0, separated: 0, fallback: 0 };
+const methodCorrect = { isolated: 0, separated: 0, fallback: 0 };
+for (const r of results) {
+  methods[r.method] = (methods[r.method] || 0) + 1;
+  if (r.correct) methodCorrect[r.method] = (methodCorrect[r.method] || 0) + 1;
+}
+
 console.log(`\n\n${'='.repeat(60)}`);
 console.log(`CONNECTED COMPONENT CLASSIFICATION RESULTS`);
 console.log(`${'='.repeat(60)}`);
 console.log(`\nTotal digits: ${results.length}`);
-console.log(`Isolated (not touching edges): ${isolatedCount}/${results.length} (${(isolatedCount/results.length*100).toFixed(1)}%)`);
-console.log(`Touching edges: ${touchingCount}/${results.length} (${(touchingCount/results.length*100).toFixed(1)}%)`);
+console.log(`\n--- Method breakdown ---`);
+for (const m of ['isolated', 'separated', 'fallback']) {
+  const n = methods[m] || 0;
+  const c = methodCorrect[m] || 0;
+  console.log(`  ${m.padEnd(10)}: ${n}/${results.length} (${(n/results.length*100).toFixed(1)}%), accuracy: ${n>0?(c/n*100).toFixed(1):'N/A'}% (${c}/${n})`);
+}
 
 console.log(`\n--- Overall accuracy ---`);
-console.log(`  All:      ${totalCorrect}/${results.length} (${(totalCorrect/results.length*100).toFixed(1)}%)`);
-console.log(`  Isolated: ${isolatedCorrect}/${isolatedCount} (${isolatedCount>0?(isolatedCorrect/isolatedCount*100).toFixed(1):'N/A'}%)`);
-console.log(`  Touching: ${touchingCorrect}/${touchingCount} (${touchingCount>0?(touchingCorrect/touchingCount*100).toFixed(1):'N/A'}%)`);
+console.log(`  All: ${totalCorrect}/${results.length} (${(totalCorrect/results.length*100).toFixed(1)}%)`);
 
-// Per-digit breakdown for isolated
-console.log(`\n--- Per-digit accuracy (isolated only) ---`);
+// Per-digit breakdown
+console.log(`\n--- Per-digit accuracy ---`);
 for (let d = 0; d < 10; d++) {
-  const iso = results.filter(r => r.expected === d && r.isIsolated);
-  const isoCorrect = iso.filter(r => r.correct).length;
-  const misclass = iso.filter(r => !r.correct).map(r => r.predicted);
-  console.log(`  ${d}: ${isoCorrect}/${iso.length} (${iso.length>0?(isoCorrect/iso.length*100).toFixed(0):'N/A'}%)${misclass.length?' → misclassified as: '+misclass.join(','):''}`);
+  const ofDigit = results.filter(r => r.expected === d);
+  const correctOfDigit = ofDigit.filter(r => r.correct).length;
+  const misclass = ofDigit.filter(r => !r.correct).map(r => `${r.predicted}(${r.method[0]})`);
+  console.log(`  ${d}: ${correctOfDigit}/${ofDigit.length} (${(correctOfDigit/ofDigit.length*100).toFixed(0)}%)${misclass.length?' → errors: '+misclass.join(', '):''}`);
 }
 
 // Per-row breakdown
 console.log(`\n--- Per-row breakdown ---`);
 for (const row of ROWS) {
   const ofRow = results.filter(r => r.row === row);
-  const isoRow = ofRow.filter(r => r.isIsolated);
-  const isoCorr = isoRow.filter(r => r.correct).length;
   const allCorr = ofRow.filter(r => r.correct).length;
-  console.log(`  ${row}: ${isoRow.length}/${ofRow.length} isolated (${(isoRow.length/ofRow.length*100).toFixed(0)}%), isolated acc: ${isoRow.length>0?(isoCorr/isoRow.length*100).toFixed(0):'N/A'}%, all acc: ${(allCorr/ofRow.length*100).toFixed(0)}%`);
+  const byMethod = {};
+  for (const r of ofRow) { byMethod[r.method] = (byMethod[r.method]||0) + 1; }
+  console.log(`  ${row}: ${allCorr}/${ofRow.length} (${(allCorr/ofRow.length*100).toFixed(0)}%) — methods: ${Object.entries(byMethod).map(([m,n])=>`${m}:${n}`).join(', ')}`);
 }
 
-// Show errors on isolated digits
-const isoErrors = results.filter(r => r.isIsolated && !r.correct);
-if (isoErrors.length > 0) {
-  console.log(`\n--- Errors on isolated digits (${isoErrors.length}) ---`);
-  for (const e of isoErrors) {
-    console.log(`  ${e.row}/${e.col}/d${e.digitIndex}: expected ${e.expected}, got ${e.predicted} (conf ${e.confidence}%)`);
+// Show all errors
+const errors = results.filter(r => !r.correct);
+if (errors.length > 0) {
+  console.log(`\n--- All errors (${errors.length}) ---`);
+  for (const e of errors) {
+    console.log(`  ${e.row}/${e.col}/d${e.digitIndex}: expected ${e.expected}, got ${e.predicted} (conf ${e.confidence}%, ${e.method})`);
   }
 }
 

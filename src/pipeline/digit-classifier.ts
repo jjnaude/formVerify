@@ -104,12 +104,11 @@ export async function classifyDigitWithCV(
 /**
  * Connected-component-based preprocessing for MNIST.
  *
- * Tries to find an isolated digit component (not touching any edge of the cell).
- * If found, extracts the component MASK (binary pixels only for that component),
- * resizes to 20×20 and centers in 28×28. This cleanly removes box borders and
- * adjacent cell bleed-through.
- *
- * Falls back to the old inset+grayscale approach if no isolated component exists.
+ * 1. Binarize, find connected components
+ * 2. If an isolated (non-edge-touching) component exists, extract its mask
+ * 3. Otherwise, force separation by clearing pixels one row/column in from
+ *    each edge, then re-run CC analysis to find the now-separated digit
+ * 4. Resize mask to 20×20, center in 28×28
  */
 function preprocessWithCC(cv: CV, src: CV): Float32Array {
   // 1. Grayscale
@@ -126,8 +125,64 @@ function preprocessWithCC(cv: CV, src: CV): Float32Array {
   const binary = new cv.Mat();
   cv.adaptiveThreshold(gray, binary, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C,
     cv.THRESH_BINARY_INV, 15, 10);
+  gray.delete();
 
-  // 3. Connected components with stats
+  const w = binary.cols, h = binary.rows;
+
+  // 3. Try to find an isolated component (pass 1)
+  let bestLabel = findLargestIsolatedComponent(cv, binary);
+
+  let separated: CV | null = null;
+  if (bestLabel < 0) {
+    // No isolated component — force separation by clearing pixels one row/column
+    // in from each edge. This breaks the connection between digit strokes and
+    // the printed box border.
+    separated = new cv.Mat();
+    binary.copyTo(separated);
+
+    // Clear row 1 and row h-2 (one in from top and bottom edges)
+    for (let x = 0; x < w; x++) {
+      separated.ucharPtr(1, x)[0] = 0;
+      separated.ucharPtr(h - 2, x)[0] = 0;
+    }
+    // Clear column 1 and column w-2 (one in from left and right edges)
+    for (let y = 0; y < h; y++) {
+      separated.ucharPtr(y, 1)[0] = 0;
+      separated.ucharPtr(y, w - 2)[0] = 0;
+    }
+
+    // Re-run CC on the separated image
+    bestLabel = findLargestIsolatedComponent(cv, separated);
+  }
+
+  const source = separated || binary;
+  let result: Float32Array;
+
+  if (bestLabel >= 0) {
+    result = extractComponentToMNIST(cv, source, bestLabel);
+  } else {
+    // Still no isolated component even after separation — use the largest
+    // component regardless (best effort)
+    const fallbackLabel = findLargestComponent(cv, source);
+    if (fallbackLabel >= 0) {
+      result = extractComponentToMNIST(cv, source, fallbackLabel);
+    } else {
+      // Empty image — return blank
+      result = new Float32Array(784);
+    }
+  }
+
+  if (separated) separated.delete();
+  binary.delete();
+
+  return result;
+}
+
+/**
+ * Find the largest connected component that does NOT touch any image edge.
+ * Returns the label, or -1 if none found.
+ */
+function findLargestIsolatedComponent(cv: CV, binary: CV): number {
   const labels = new cv.Mat();
   const stats = new cv.Mat();
   const centroids = new cv.Mat();
@@ -136,7 +191,6 @@ function preprocessWithCC(cv: CV, src: CV): Float32Array {
   const w = binary.cols, h = binary.rows;
   const minArea = w * h * 0.05;
 
-  // Find the largest non-edge-touching component
   let bestLabel = -1;
   let bestArea = 0;
   for (let label = 1; label < numLabels; label++) {
@@ -154,114 +208,92 @@ function preprocessWithCC(cv: CV, src: CV): Float32Array {
     }
   }
 
-  let result: Float32Array;
+  labels.delete();
+  stats.delete();
+  centroids.delete();
 
-  if (bestLabel >= 0) {
-    // Extract the component mask: only pixels belonging to this label
-    const compLeft = stats.intAt(bestLabel, cv.CC_STAT_LEFT);
-    const compTop = stats.intAt(bestLabel, cv.CC_STAT_TOP);
-    const compW = stats.intAt(bestLabel, cv.CC_STAT_WIDTH);
-    const compH = stats.intAt(bestLabel, cv.CC_STAT_HEIGHT);
+  return bestLabel;
+}
 
-    // Build a mask image of just this component's bounding box
-    const mask = new cv.Mat(compH, compW, cv.CV_8UC1, new cv.Scalar(0));
-    for (let y = 0; y < compH; y++) {
-      for (let x = 0; x < compW; x++) {
-        if (labels.intAt(compTop + y, compLeft + x) === bestLabel) {
-          mask.ucharPtr(y, x)[0] = 255;
-        }
-      }
+/**
+ * Find the largest connected component (regardless of edge touching).
+ * Returns the label, or -1 if none found.
+ */
+function findLargestComponent(cv: CV, binary: CV): number {
+  const labels = new cv.Mat();
+  const stats = new cv.Mat();
+  const centroids = new cv.Mat();
+  const numLabels = cv.connectedComponentsWithStats(binary, labels, stats, centroids);
+
+  let bestLabel = -1;
+  let bestArea = 0;
+  for (let label = 1; label < numLabels; label++) {
+    const area = stats.intAt(label, cv.CC_STAT_AREA);
+    if (area > bestArea) {
+      bestLabel = label;
+      bestArea = area;
     }
-
-    // Resize mask to fit 20×20
-    const targetSize = 20;
-    const scale = Math.min(targetSize / compW, targetSize / compH);
-    const nw = Math.max(1, Math.round(compW * scale));
-    const nh = Math.max(1, Math.round(compH * scale));
-    const resized = new cv.Mat();
-    cv.resize(mask, resized, new cv.Size(nw, nh), 0, 0, cv.INTER_AREA);
-    mask.delete();
-
-    // Center in 28×28, MNIST format (white ink on black background)
-    result = new Float32Array(784);
-    const offX = Math.round((28 - nw) / 2);
-    const offY = Math.round((28 - nh) / 2);
-    for (let y = 0; y < nh; y++) {
-      for (let x = 0; x < nw; x++) {
-        const idx = (offY + y) * 28 + (offX + x);
-        if (idx >= 0 && idx < 784) {
-          result[idx] = resized.ucharAt(y, x) / 255.0;
-        }
-      }
-    }
-    resized.delete();
-  } else {
-    // Fallback: old inset+grayscale approach for edge-touching digits
-    result = preprocessFallback(cv, gray);
   }
 
   labels.delete();
   stats.delete();
   centroids.delete();
-  binary.delete();
-  gray.delete();
 
-  return result;
+  return bestLabel;
 }
 
 /**
- * Fallback preprocessing when no isolated component is found.
- * Uses generous inset + grayscale normalization.
+ * Extract a specific component's mask from a binary image, resize to 20×20,
+ * and center in a 28×28 MNIST-format Float32Array.
  */
-function preprocessFallback(cv: CV, gray: CV): Float32Array {
-  const insetX = Math.max(4, Math.round(gray.cols * 0.30));
-  const insetY = Math.max(4, Math.round(gray.rows * 0.20));
-  const iw = Math.max(4, gray.cols - 2 * insetX);
-  const ih = Math.max(4, gray.rows - 2 * insetY);
-  const insetROI = gray.roi(new cv.Rect(insetX, insetY, iw, ih));
-  const cleaned = new cv.Mat();
-  insetROI.copyTo(cleaned);
-  insetROI.delete();
+function extractComponentToMNIST(cv: CV, binary: CV, targetLabel: number): Float32Array {
+  const labels = new cv.Mat();
+  const stats = new cv.Mat();
+  const centroids = new cv.Mat();
+  cv.connectedComponentsWithStats(binary, labels, stats, centroids);
 
-  const blurred = new cv.Mat();
-  cv.GaussianBlur(cleaned, blurred, new cv.Size(3, 3), 0.8);
-  cleaned.delete();
+  const compLeft = stats.intAt(targetLabel, cv.CC_STAT_LEFT);
+  const compTop = stats.intAt(targetLabel, cv.CC_STAT_TOP);
+  const compW = stats.intAt(targetLabel, cv.CC_STAT_WIDTH);
+  const compH = stats.intAt(targetLabel, cv.CC_STAT_HEIGHT);
 
-  const targetSize = 20;
-  const scale = Math.min(targetSize / blurred.cols, targetSize / blurred.rows);
-  const newW = Math.max(1, Math.round(blurred.cols * scale));
-  const newH = Math.max(1, Math.round(blurred.rows * scale));
-  const resized = new cv.Mat();
-  cv.resize(blurred, resized, new cv.Size(newW, newH), 0, 0, cv.INTER_AREA);
-  blurred.delete();
-
-  const allVals: number[] = [];
-  for (let y = 0; y < newH; y++) {
-    for (let x = 0; x < newW; x++) {
-      allVals.push(resized.ucharAt(y, x));
-    }
-  }
-  allVals.sort((a, b) => a - b);
-  const lo = allVals[Math.floor(allVals.length * 0.05)];
-  const hi = allVals[Math.floor(allVals.length * 0.95)];
-  const range = hi - lo || 1;
-
-  const result = new Float32Array(784);
-  const offsetX = Math.round((28 - newW) / 2);
-  const offsetY = Math.round((28 - newH) / 2);
-
-  for (let y = 0; y < newH; y++) {
-    for (let x = 0; x < newW; x++) {
-      const val = resized.ucharAt(y, x);
-      const normalized = Math.max(0, Math.min(1, (hi - val) / range));
-      const idx = (offsetY + y) * 28 + (offsetX + x);
-      if (idx >= 0 && idx < 784) {
-        result[idx] = normalized;
+  // Build mask of just this component at its bounding box
+  const mask = new cv.Mat(compH, compW, cv.CV_8UC1, new cv.Scalar(0));
+  for (let y = 0; y < compH; y++) {
+    for (let x = 0; x < compW; x++) {
+      if (labels.intAt(compTop + y, compLeft + x) === targetLabel) {
+        mask.ucharPtr(y, x)[0] = 255;
       }
     }
   }
 
+  labels.delete();
+  stats.delete();
+  centroids.delete();
+
+  // Resize to fit 20×20
+  const targetSize = 20;
+  const scale = Math.min(targetSize / compW, targetSize / compH);
+  const nw = Math.max(1, Math.round(compW * scale));
+  const nh = Math.max(1, Math.round(compH * scale));
+  const resized = new cv.Mat();
+  cv.resize(mask, resized, new cv.Size(nw, nh), 0, 0, cv.INTER_AREA);
+  mask.delete();
+
+  // Center in 28×28
+  const result = new Float32Array(784);
+  const offX = Math.round((28 - nw) / 2);
+  const offY = Math.round((28 - nh) / 2);
+  for (let y = 0; y < nh; y++) {
+    for (let x = 0; x < nw; x++) {
+      const idx = (offY + y) * 28 + (offX + x);
+      if (idx >= 0 && idx < 784) {
+        result[idx] = resized.ucharAt(y, x) / 255.0;
+      }
+    }
+  }
   resized.delete();
+
   return result;
 }
 
