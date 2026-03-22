@@ -271,7 +271,7 @@ function extractComponentToMNIST(cv: CV, binary: CV, targetLabel: number): Float
   stats.delete();
   centroids.delete();
 
-  // Resize to fit 20×20
+  // Resize to fit 20×20 (aspect-ratio preserving)
   const targetSize = 20;
   const scale = Math.min(targetSize / compW, targetSize / compH);
   const nw = Math.max(1, Math.round(compW * scale));
@@ -280,15 +280,40 @@ function extractComponentToMNIST(cv: CV, binary: CV, targetLabel: number): Float
   cv.resize(mask, resized, new cv.Size(nw, nh), 0, 0, cv.INTER_AREA);
   mask.delete();
 
-  // Center in 28×28
-  const result = new Float32Array(784);
-  const offX = Math.round((28 - nw) / 2);
-  const offY = Math.round((28 - nh) / 2);
+  // Compute center of mass of the resized digit
+  let massX = 0, massY = 0, totalMass = 0;
   for (let y = 0; y < nh; y++) {
     for (let x = 0; x < nw; x++) {
-      const idx = (offY + y) * 28 + (offX + x);
-      if (idx >= 0 && idx < 784) {
-        result[idx] = resized.ucharAt(y, x) / 255.0;
+      const v = resized.ucharAt(y, x);
+      if (v > 0) {
+        massX += x * v;
+        massY += y * v;
+        totalMass += v;
+      }
+    }
+  }
+
+  // Center in 28×28 by center of mass (MNIST convention)
+  // The center of mass should land at (14, 14) — the center of the 28×28 frame
+  const result = new Float32Array(784);
+  let offX: number, offY: number;
+  if (totalMass > 0) {
+    const comX = massX / totalMass;
+    const comY = massY / totalMass;
+    offX = Math.round(14 - comX);
+    offY = Math.round(14 - comY);
+  } else {
+    // Fallback to bounding-box centering if no mass
+    offX = Math.round((28 - nw) / 2);
+    offY = Math.round((28 - nh) / 2);
+  }
+
+  for (let y = 0; y < nh; y++) {
+    for (let x = 0; x < nw; x++) {
+      const dx = offX + x;
+      const dy = offY + y;
+      if (dx >= 0 && dx < 28 && dy >= 0 && dy < 28) {
+        result[dy * 28 + dx] = resized.ucharAt(y, x) / 255.0;
       }
     }
   }

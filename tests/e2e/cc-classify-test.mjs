@@ -275,12 +275,26 @@ for (let gi = 0; gi < groundTruth.length; gi++) {
       const resized = new cv.Mat();
       cv.resize(mask, resized, new cv.Size(nw, nh), 0, 0, cv.INTER_AREA);
       mask.delete();
-      const input = new Float32Array(784);
-      const offX = Math.round((28-nw)/2), offY = Math.round((28-nh)/2);
+      // Center of mass centering (MNIST convention)
+      let massX = 0, massY = 0, totalMass = 0;
       for (let y = 0; y < nh; y++)
         for (let x = 0; x < nw; x++) {
-          const idx = (offY+y)*28+(offX+x);
-          if (idx >= 0 && idx < 784) input[idx] = resized.ucharAt(y, x) / 255.0;
+          const v = resized.ucharAt(y, x);
+          if (v > 0) { massX += x*v; massY += y*v; totalMass += v; }
+        }
+      const input = new Float32Array(784);
+      let offX, offY;
+      if (totalMass > 0) {
+        offX = Math.round(14 - massX/totalMass);
+        offY = Math.round(14 - massY/totalMass);
+      } else {
+        offX = Math.round((28-nw)/2); offY = Math.round((28-nh)/2);
+      }
+      for (let y = 0; y < nh; y++)
+        for (let x = 0; x < nw; x++) {
+          const dx = offX+x, dy = offY+y;
+          if (dx >= 0 && dx < 28 && dy >= 0 && dy < 28)
+            input[dy*28+dx] = resized.ucharAt(y, x) / 255.0;
         }
       resized.delete();
       return input;
