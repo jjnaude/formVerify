@@ -32,7 +32,8 @@ export function initClassifier(): Promise<ort.InferenceSession> {
 
   initPromise = (async () => {
     ort.env.wasm.numThreads = 1;
-    ort.env.wasm.wasmPaths = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1/dist/';
+    // Don't set wasmPaths — let onnxruntime-web resolve from its own bundle
+    // (Vite handles the WASM file bundling automatically)
 
     const modelUrl = `${import.meta.env.BASE_URL}models/digit-classifier.onnx`;
     session = await ort.InferenceSession.create(modelUrl, {
