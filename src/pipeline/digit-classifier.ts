@@ -210,7 +210,7 @@ function findIsolatedComponents(cv: CV, binary: CV): number[] {
   const labels = new cv.Mat();
   const stats = new cv.Mat();
   const centroids = new cv.Mat();
-  const numLabels = cv.connectedComponentsWithStats(binary, labels, stats, centroids);
+  const numLabels = cv.connectedComponentsWithStats(binary, labels, stats, centroids, 8);
 
   const w = binary.cols, h = binary.rows;
   const minArea = w * h * 0.02; // lower threshold (2%) to catch small fragments
@@ -245,7 +245,7 @@ function findLargestComponent(cv: CV, binary: CV): number {
   const labels = new cv.Mat();
   const stats = new cv.Mat();
   const centroids = new cv.Mat();
-  const numLabels = cv.connectedComponentsWithStats(binary, labels, stats, centroids);
+  const numLabels = cv.connectedComponentsWithStats(binary, labels, stats, centroids, 8);
 
   let bestLabel = -1;
   let bestArea = 0;
@@ -280,7 +280,7 @@ function extractComponentsToMNIST(cv: CV, binary: CV, targetLabels: number[]): F
   const labels = new cv.Mat();
   const stats = new cv.Mat();
   const centroids = new cv.Mat();
-  cv.connectedComponentsWithStats(binary, labels, stats, centroids);
+  cv.connectedComponentsWithStats(binary, labels, stats, centroids, 8);
 
   // Compute merged bounding box across all target labels
   let mergedLeft = binary.cols, mergedTop = binary.rows;
