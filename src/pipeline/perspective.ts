@@ -9,11 +9,11 @@
  *     │                       │
  *   ID 3 (BL)  ──────────  ID 2 (BR)
  *
- * The marker corners used are the inner corners (closest to form center):
- *   ID 0 → bottom-right corner of marker
- *   ID 1 → bottom-left corner of marker
- *   ID 2 → top-left corner of marker
- *   ID 3 → top-right corner of marker
+ * The marker corners used are the outer corners (farthest from form center):
+ *   ID 0 → top-left corner of marker
+ *   ID 1 → top-right corner of marker
+ *   ID 2 → bottom-right corner of marker
+ *   ID 3 → bottom-left corner of marker
  */
 
 import type { DetectedMarker, Point } from './aruco-detector.js';
@@ -33,18 +33,17 @@ export interface CorrectionResult {
 }
 
 /**
- * Get the inner corner of a marker (the corner closest to the form center).
+ * Get the outer corner of a marker (the corner farthest from the form center).
  *
  * Marker corners are ordered [TL, TR, BR, BL] after rotation correction.
- * Inner corners by marker position:
- *   ID 0 (form TL) → marker's BR corner (index 2)
- *   ID 1 (form TR) → marker's BL corner (index 3)
- *   ID 2 (form BR) → marker's TL corner (index 0)
- *   ID 3 (form BL) → marker's TR corner (index 1)
+ * Outer corners by marker position:
+ *   ID 0 (form TL) → marker's TL corner (index 0)
+ *   ID 1 (form TR) → marker's TR corner (index 1)
+ *   ID 2 (form BR) → marker's BR corner (index 2)
+ *   ID 3 (form BL) → marker's BL corner (index 3)
  */
-function getInnerCorner(marker: DetectedMarker): Point {
-  const cornerIndex = [2, 3, 0, 1][marker.id];
-  return marker.corners[cornerIndex];
+function getOuterCorner(marker: DetectedMarker): Point {
+  return marker.corners[marker.id];
 }
 
 /**
@@ -68,11 +67,11 @@ export function correctPerspective(
     if (!markerMap.has(id)) return null;
   }
 
-  // Source points: inner corners of each marker
-  const tl = getInnerCorner(markerMap.get(0)!);
-  const tr = getInnerCorner(markerMap.get(1)!);
-  const br = getInnerCorner(markerMap.get(2)!);
-  const bl = getInnerCorner(markerMap.get(3)!);
+  // Source points: outer corners of each marker
+  const tl = getOuterCorner(markerMap.get(0)!);
+  const tr = getOuterCorner(markerMap.get(1)!);
+  const br = getOuterCorner(markerMap.get(2)!);
+  const bl = getOuterCorner(markerMap.get(3)!);
 
   const srcPts = cv.matFromArray(4, 1, cv.CV_32FC2, [
     tl.x, tl.y,

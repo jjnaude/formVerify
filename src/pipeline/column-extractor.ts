@@ -12,23 +12,23 @@
  * on the rectified 2339×1654 image.
  */
 
-import { preprocessCell } from './preprocess.js';
+import { preprocessCell, createRedMask, removeRedInk } from './preprocess.js';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type CV = any;
 
-// --- Calibrated constants (measured from actual printed form) ---
+// --- Calibrated constants (measured from calibrate.html on printed red form) ---
 const IMG_W = 2339;
 const IMG_H = 1654;
 
 /** Digit box width in pixels */
-const BOX_W = 34;
+const BOX_W = 31;
 /** Digit box height in pixels */
-const BOX_H = Math.round(0.0308 * IMG_H); // ~51px
-/** Stride between adjacent digit boxes (boxes touch, no gap) */
-const DIGIT_STRIDE = 34;
+const BOX_H = 41;
+/** Stride between adjacent digit boxes (= BOX_W, shared edges) */
+const DIGIT_STRIDE = 31;
 /** Gap between d2 right edge and d3 left edge (comma space) */
-const DECIMAL_GAP = 11;
+const DECIMAL_GAP = 10;
 /** Full stride across decimal: left-of-d2 → left-of-d3 */
 const DECIMAL_STRIDE = BOX_W + DECIMAL_GAP;
 
@@ -82,20 +82,19 @@ export interface ColumnExtractionResult {
 // --- Main extraction function ---
 
 export function columnExtract(cv: CV, corrected: CV): ColumnExtractionResult {
-  const gray = new cv.Mat();
-  cv.cvtColor(corrected, gray, cv.COLOR_RGBA2GRAY);
+  // Step 1: Detect horizontal red lines in the image
+  const hLines = detectHorizontalLines(cv, corrected);
 
-  try {
-    // Step 1: Find row boundaries
-    const rowBounds = findRowBoundaries(cv, gray);
+  // Step 2: Find row boundaries (4 equally-spaced horizontal lines)
+  const rowBounds = findRowBoundaries(hLines);
 
-    // Step 2: Find header top
-    const headerTop = findHeaderTop(cv, gray, rowBounds);
+  // Step 3: Find header top (line above first row boundary)
+  const headerTop = findHeaderTop(hLines, rowBounds);
 
-    // Step 3: Find column dividers using full table strip
-    const tableTop = headerTop;
-    const tableBot = rowBounds[3];
-    const { dividers, tableStripImage } = findColumnDividers(cv, gray, corrected, tableTop, tableBot);
+  // Step 4: Find column dividers using red mask + horizontal erosion
+  const tableTop = headerTop;
+  const tableBot = rowBounds[3];
+  const { dividers, tableStripImage } = findColumnDividers(cv, corrected, tableTop, tableBot);
 
     const avgColWidth = Math.round(
       dividers.slice(1).reduce((sum: number, d: number, i: number) => sum + (d - dividers[i]), 0) / (dividers.length - 1),
@@ -159,8 +158,10 @@ export function columnExtract(cv: CV, corrected: CV): ColumnExtractionResult {
           const digitROI = corrected.roi(new cv.Rect(cx, cy, bw, bh));
           const digitImageData = matToImageData(cv, digitROI);
 
-          // Preprocess
-          const preprocessed = preprocessCell(cv, digitROI);
+          // Remove red ink (form lines) then preprocess
+          const noRed = removeRedInk(cv, digitROI);
+          const preprocessed = preprocessCell(cv, noRed);
+          noRed.delete();
           const ppImageData = matToImageData(cv, preprocessed);
           preprocessed.delete();
           digitROI.delete();
@@ -202,63 +203,85 @@ export function columnExtract(cv: CV, corrected: CV): ColumnExtractionResult {
         digitPreprocessed,
       },
     };
-  } finally {
-    gray.delete();
+}
+
+// --- Horizontal line detection using red mask ---
+
+/**
+ * Detect y-positions of horizontal red lines in the image.
+ * Uses morphological opening with a wide horizontal kernel to
+ * isolate lines that span significant width, then horizontal
+ * projection to find their y-positions.
+ */
+function detectHorizontalLines(cv: CV, corrected: CV): number[] {
+  const redMask = createRedMask(cv, corrected);
+
+  // Morphological opening: keep only features spanning ≥200px horizontally
+  const hKernel = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(200, 1));
+  const hLines = new cv.Mat();
+  cv.morphologyEx(redMask, hLines, cv.MORPH_OPEN, hKernel);
+  hKernel.delete();
+  redMask.delete();
+
+  // Horizontal projection (count red pixels per row)
+  const rows = corrected.rows;
+  const cols = corrected.cols;
+  const profile = new Float64Array(rows);
+  for (let y = 0; y < rows; y++) {
+    let sum = 0;
+    for (let x = 0; x < cols; x++) sum += hLines.ucharAt(y, x);
+    profile[y] = sum / 255;
   }
+  hLines.delete();
+
+  // Find peaks
+  const maxVal = Math.max(...Array.from(profile));
+  if (maxVal === 0) return [];
+  const threshold = maxVal * 0.3;
+
+  const peaks: { y: number; strength: number }[] = [];
+  for (let y = 1; y < rows - 1; y++) {
+    if (profile[y] > threshold &&
+        profile[y] >= profile[y - 1] && profile[y] >= profile[y + 1]) {
+      peaks.push({ y, strength: profile[y] });
+    }
+  }
+
+  // NMS with 10px spacing
+  peaks.sort((a, b) => b.strength - a.strength);
+  const selected: number[] = [];
+  for (const p of peaks) {
+    if (!selected.some(s => Math.abs(s - p.y) < 10)) {
+      selected.push(p.y);
+    }
+  }
+  selected.sort((a, b) => a - b);
+
+  return selected;
 }
 
 // --- Row boundary detection ---
 
-function findRowBoundaries(cv: CV, gray: CV): number[] {
-  const edges = new cv.Mat();
-  cv.Canny(gray, edges, 50, 150);
-
-  const hough = new cv.Mat();
-  cv.HoughLinesP(edges, hough, 1, Math.PI / 180, 40, 40, 3);
-
-  const hYs: number[] = [];
-  for (let i = 0; i < hough.rows; i++) {
-    const x1 = hough.intAt(i, 0), y1 = hough.intAt(i, 1);
-    const x2 = hough.intAt(i, 2), y2 = hough.intAt(i, 3);
-    const angle = Math.abs(Math.atan2(y2 - y1, x2 - x1) * 180 / Math.PI);
-    if (angle < 3 || angle > 177) hYs.push((y1 + y2) / 2);
-  }
-  hough.delete();
-  edges.delete();
-
-  hYs.sort((a, b) => a - b);
-  const clusters: number[][] = [];
-  let cl = [hYs[0]];
-  for (let i = 1; i < hYs.length; i++) {
-    if (hYs[i] - hYs[i - 1] < 10) cl.push(hYs[i]);
-    else { clusters.push(cl); cl = [hYs[i]]; }
-  }
-  clusters.push(cl);
-  const clusterCenters = clusters.map(c => Math.round(c.reduce((a, b) => a + b, 0) / c.length));
-
-  // Find 4 boundaries with equal-spacing constraint
-  const tableClusters = clusterCenters.filter(y => y > 150 && y < 500);
+function findRowBoundaries(lineYs: number[]): number[] {
+  // Find best 4 equally-spaced horizontal lines (table row dividers)
   let bestMatch: number[] | null = null;
   let bestScore = Infinity;
 
-  for (let a = 0; a < tableClusters.length; a++) {
-    for (let b = a + 1; b < tableClusters.length; b++) {
-      const h0 = tableClusters[b] - tableClusters[a];
-      if (h0 < 40 || h0 > 80) continue;
-      for (let c = b + 1; c < tableClusters.length; c++) {
-        const h1 = tableClusters[c] - tableClusters[b];
-        if (h1 < 40 || h1 > 80) continue;
-        for (let d = c + 1; d < tableClusters.length; d++) {
-          const h2 = tableClusters[d] - tableClusters[c];
-          if (h2 < 40 || h2 > 80) continue;
+  for (let a = 0; a < lineYs.length; a++) {
+    for (let b = a + 1; b < lineYs.length; b++) {
+      const h0 = lineYs[b] - lineYs[a];
+      if (h0 < 30 || h0 > 120) continue;
+      for (let c = b + 1; c < lineYs.length; c++) {
+        const h1 = lineYs[c] - lineYs[b];
+        if (h1 < 30 || h1 > 120) continue;
+        for (let d = c + 1; d < lineYs.length; d++) {
+          const h2 = lineYs[d] - lineYs[c];
+          if (h2 < 30 || h2 > 120) continue;
           const avgH = (h0 + h1 + h2) / 3;
           const heightVar = Math.abs(h0 - avgH) + Math.abs(h1 - avgH) + Math.abs(h2 - avgH);
-          const centerY = (tableClusters[a] + tableClusters[d]) / 2;
-          const expectedCenter = (0.1485 + 0.2145) / 2 * IMG_H + (0.0308 * IMG_H) / 2;
-          const score = heightVar + Math.abs(centerY - expectedCenter) * 0.5;
-          if (score < bestScore) {
-            bestScore = score;
-            bestMatch = [tableClusters[a], tableClusters[b], tableClusters[c], tableClusters[d]];
+          if (heightVar < bestScore) {
+            bestScore = heightVar;
+            bestMatch = [lineYs[a], lineYs[b], lineYs[c], lineYs[d]];
           }
         }
       }
@@ -271,67 +294,49 @@ function findRowBoundaries(cv: CV, gray: CV): number[] {
   return bestMatch;
 }
 
-function findHeaderTop(cv: CV, gray: CV, rowBounds: number[]): number {
-  const edges = new cv.Mat();
-  cv.Canny(gray, edges, 50, 150);
-
-  const hough = new cv.Mat();
-  cv.HoughLinesP(edges, hough, 1, Math.PI / 180, 40, 40, 3);
-
-  const hYs: number[] = [];
-  for (let i = 0; i < hough.rows; i++) {
-    const x1 = hough.intAt(i, 0), y1 = hough.intAt(i, 1);
-    const x2 = hough.intAt(i, 2), y2 = hough.intAt(i, 3);
-    const angle = Math.abs(Math.atan2(y2 - y1, x2 - x1) * 180 / Math.PI);
-    if (angle < 3 || angle > 177) hYs.push((y1 + y2) / 2);
+function findHeaderTop(lineYs: number[], rowBounds: number[]): number {
+  // Find the horizontal line closest above the first row boundary
+  const candidates = lineYs.filter(y => y < rowBounds[0] && y > rowBounds[0] - 150);
+  if (candidates.length > 0) {
+    return candidates[candidates.length - 1]; // closest to rowBounds[0]
   }
-  hough.delete();
-  edges.delete();
-
-  hYs.sort((a, b) => a - b);
-  const clusters: number[][] = [];
-  let cl = [hYs[0]];
-  for (let i = 1; i < hYs.length; i++) {
-    if (hYs[i] - hYs[i - 1] < 10) cl.push(hYs[i]);
-    else { clusters.push(cl); cl = [hYs[i]]; }
-  }
-  clusters.push(cl);
-  const centers = clusters.map(c => Math.round(c.reduce((a, b) => a + b, 0) / c.length));
-
-  const candidates = centers.filter(y => y < rowBounds[0] && y > rowBounds[0] - 100);
-  return candidates.length > 0 ? candidates[0] : rowBounds[0] - 57;
+  return rowBounds[0] - 57; // fallback
 }
 
-// --- Column divider detection ---
+// --- Column divider detection using red mask + horizontal erosion ---
 
 function findColumnDividers(
   cv: CV,
-  gray: CV,
   corrected: CV,
   tableTop: number,
   tableBot: number,
 ): { dividers: number[]; tableStripImage: ImageData } {
   const tableH = tableBot - tableTop;
-  const tableStrip = gray.roi(new cv.Rect(0, tableTop, gray.cols, tableH));
 
-  // Sobel |dI/dx|
-  const sobelX = new cv.Mat();
-  cv.Sobel(tableStrip, sobelX, cv.CV_32F, 1, 0, 3);
-  const absSobel = new cv.Mat();
-  cv.convertScaleAbs(sobelX, absSobel);
-  sobelX.delete();
+  // Create red mask of the table strip
+  const tableStrip = corrected.roi(new cv.Rect(0, tableTop, corrected.cols, tableH));
+  const redMask = createRedMask(cv, tableStrip);
+  tableStrip.delete();
 
-  // Sum vertically
-  const profile = new Float64Array(gray.cols);
-  for (let x = 0; x < gray.cols; x++) {
+  // Horizontal erosion: removes vertical features ≤ 2px wide (digit box edges ~0.7px)
+  // while preserving column dividers (~4px wide)
+  const hKernel = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(3, 1));
+  const eroded = new cv.Mat();
+  cv.erode(redMask, eroded, hKernel);
+  hKernel.delete();
+  redMask.delete();
+
+  // Vertical projection (sum each column)
+  const profile = new Float64Array(corrected.cols);
+  for (let x = 0; x < corrected.cols; x++) {
     let sum = 0;
-    for (let y = 0; y < tableH; y++) sum += absSobel.ucharAt(y, x);
-    profile[x] = sum;
+    for (let y = 0; y < tableH; y++) sum += eroded.ucharAt(y, x);
+    profile[x] = sum / 255;
   }
-  absSobel.delete();
+  eroded.delete();
 
   // Gaussian blur σ=3
-  const blurred = new Float64Array(gray.cols);
+  const blurred = new Float64Array(corrected.cols);
   const sigma = 3, kHalf = 7;
   const kernel: number[] = [];
   let kSum = 0;
@@ -341,10 +346,10 @@ function findColumnDividers(
     kSum += v;
   }
   for (let i = 0; i < kernel.length; i++) kernel[i] /= kSum;
-  for (let x = 0; x < gray.cols; x++) {
+  for (let x = 0; x < corrected.cols; x++) {
     let val = 0;
     for (let k = 0; k < kernel.length; k++) {
-      const xi = Math.max(0, Math.min(gray.cols - 1, x + k - kHalf));
+      const xi = Math.max(0, Math.min(corrected.cols - 1, x + k - kHalf));
       val += profile[xi] * kernel[k];
     }
     blurred[x] = val;
@@ -354,7 +359,7 @@ function findColumnDividers(
   const maxVal = Math.max(...Array.from(blurred));
   const highThreshold = maxVal * 0.35;
   const allPeaks: { x: number; strength: number }[] = [];
-  for (let x = 2; x < gray.cols - 2; x++) {
+  for (let x = 2; x < corrected.cols - 2; x++) {
     if (blurred[x] > highThreshold &&
         blurred[x] > blurred[x - 1] && blurred[x] > blurred[x + 1] &&
         blurred[x] > blurred[x - 2] && blurred[x] > blurred[x + 2]) {
@@ -372,23 +377,59 @@ function findColumnDividers(
   }
   selected.sort((a, b) => a.x - b.x);
 
-  // Find best run of 15 equally-spaced dividers
-  let bestRun: number[] | null = null;
-  let bestRunVar = Infinity;
-  for (let start = 0; start <= selected.length - 15; start++) {
-    const runDivs = selected.slice(start, start + 15).map(s => s.x);
-    const runSpacings: number[] = [];
-    for (let i = 1; i < runDivs.length; i++) runSpacings.push(runDivs[i] - runDivs[i - 1]);
-    const avg = runSpacings.reduce((a, b) => a + b, 0) / runSpacings.length;
-    const variance = runSpacings.reduce((a, s) => a + (s - avg) ** 2, 0) / runSpacings.length;
-    if (variance < bestRunVar) {
-      bestRunVar = variance;
-      bestRun = runDivs;
+  // Find median spacing among adjacent peaks (filter for plausible column widths)
+  const adjSpacings: number[] = [];
+  for (let i = 1; i < selected.length; i++) {
+    adjSpacings.push(selected[i].x - selected[i - 1].x);
+  }
+  const goodSpacings = adjSpacings.filter(s => s >= 100 && s <= 250);
+  goodSpacings.sort((a, b) => a - b);
+  const medianSpacing = goodSpacings.length > 0
+    ? goodSpacings[Math.floor(goodSpacings.length / 2)]
+    : 157; // fallback
+
+  // Build longest chain of peaks following consistent spacing.
+  // This skips table edges and row header dividers (which break the pattern).
+  let bestChain: number[] = [];
+  for (let start = 0; start < selected.length; start++) {
+    const chain = [selected[start].x];
+    for (let i = start + 1; i < selected.length; i++) {
+      const expected = chain[chain.length - 1] + medianSpacing;
+      if (Math.abs(selected[i].x - expected) < medianSpacing * 0.3) {
+        chain.push(selected[i].x);
+      }
+    }
+    if (chain.length > bestChain.length) {
+      bestChain = chain;
     }
   }
 
-  // Take first 14 as column left edges
-  const dividers = bestRun ? bestRun.slice(0, 14) : selected.slice(0, 14).map(s => s.x);
+  // Refine spacing from the chain
+  let refinedSpacing = medianSpacing;
+  if (bestChain.length > 1) {
+    const chainSpacings: number[] = [];
+    for (let i = 1; i < bestChain.length; i++) chainSpacings.push(bestChain[i] - bestChain[i - 1]);
+    refinedSpacing = chainSpacings.reduce((a, b) => a + b, 0) / chainSpacings.length;
+  }
+
+  // Extrapolate to 15 dividers if chain is shorter
+  while (bestChain.length < 15) {
+    const nextX = bestChain[bestChain.length - 1] + refinedSpacing;
+    if (nextX < corrected.cols - 10) {
+      bestChain.push(Math.round(nextX));
+    } else {
+      // Extend left
+      const prevX = bestChain[0] - refinedSpacing;
+      if (prevX >= 10) {
+        bestChain.unshift(Math.round(prevX));
+      } else {
+        break;
+      }
+    }
+  }
+
+  // Take first 14 as column left edges (15th is right edge of last column)
+  const dividers = bestChain.slice(0, Math.min(14, bestChain.length));
 
   // Create debug visualization
   const tableStripColor = corrected.roi(new cv.Rect(0, tableTop, corrected.cols, tableH));
@@ -401,7 +442,6 @@ function findColumnDividers(
   }
   const tableStripImage = matToImageData(cv, vis);
   vis.delete();
-  tableStrip.delete();
 
   return { dividers, tableStripImage };
 }

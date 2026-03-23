@@ -2,7 +2,7 @@
  * Form schema defining digit-box ROI positions for the healthcare waste manifest.
  *
  * All coordinates are normalized (0–1) relative to the corrected image
- * dimensions (the area between the 4 ArUco marker inner corners).
+ * dimensions (the area between the 4 ArUco marker outer corners).
  *
  * Measured from public/test-form.html (landscape A4, v2 with digit boxes).
  */

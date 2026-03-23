@@ -2,264 +2,558 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>formVerify — Calibration Tool</title>
+<title>formVerify — Digit Box Calibration</title>
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body { font-family: system-ui, sans-serif; padding: 16px; background: #f5f5f5; }
   h1 { font-size: 1.2rem; margin-bottom: 8px; }
   #instructions { background: #e3f2fd; padding: 12px; border-radius: 8px; margin-bottom: 12px; font-size: 0.9rem; line-height: 1.5; }
   #instructions strong { color: #1a73e8; }
-  .img-container { position: relative; display: inline-block; cursor: crosshair; border: 2px solid #333; }
-  .img-container img { display: block; max-width: 100%; }
-  .marker { position: absolute; width: 10px; height: 10px; background: red; border-radius: 50%; transform: translate(-5px, -5px); pointer-events: none; border: 1px solid white; }
-  .marker.done { background: #4caf50; }
-  #file-input { margin-bottom: 12px; }
-  #output { margin-top: 16px; background: white; border: 1px solid #ddd; border-radius: 8px; padding: 12px; font-family: monospace; font-size: 0.8rem; white-space: pre-wrap; max-height: 400px; overflow-y: auto; display: none; }
-  #progress { font-size: 0.9rem; margin-top: 8px; color: #333; }
-  button { padding: 8px 16px; border: none; border-radius: 4px; background: #1a73e8; color: white; cursor: pointer; font-size: 0.9rem; margin: 4px; }
-  button:disabled { background: #ccc; }
-  #undo-btn { background: #e0e0e0; color: #333; }
+  #status { font-size: 0.9rem; color: #666; margin: 8px 0; }
+  #status.error { color: #d93025; }
+  #file-input { margin-bottom: 8px; }
+  .controls { margin: 8px 0; }
+  button { padding: 6px 14px; border: none; border-radius: 4px; background: #1a73e8; color: white; cursor: pointer; font-size: 0.85rem; margin-right: 4px; }
+  button:disabled { background: #ccc; cursor: default; }
+  .secondary { background: #e0e0e0; color: #333; }
+  #progress { font-size: 0.9rem; margin: 8px 0; color: #333; min-height: 1.4em; }
+  #col-selector { margin: 8px 0; font-size: 0.85rem; }
+  #col-selector select { font-size: 0.85rem; padding: 4px; }
+  .zoom-wrapper { overflow: auto; max-width: 100%; max-height: 80vh; border: 2px solid #333; display: none; position: relative; }
+  .zoom-wrapper canvas { cursor: crosshair; display: block; image-rendering: pixelated; }
+  .marker { position: absolute; width: 12px; height: 12px; background: #4caf50; border-radius: 50%; transform: translate(-6px, -6px); pointer-events: none; border: 2px solid white; z-index: 10; }
+  #output { margin-top: 16px; background: white; border: 1px solid #ddd; border-radius: 8px; padding: 12px; font-family: monospace; font-size: 0.8rem; white-space: pre-wrap; max-height: 500px; overflow-y: auto; display: none; }
+  .preview-row { display: flex; gap: 12px; margin: 8px 0; align-items: flex-start; }
+  .preview-row canvas { border: 1px solid #ccc; image-rendering: pixelated; }
+  .preview-label { font-size: 0.75rem; color: #666; }
 </style>
 </head>
 <body>
-<h1>formVerify Calibration Tool</h1>
+<h1>formVerify — Digit Box Calibration</h1>
 
 <div id="instructions">
-  Load a <strong>rectified image</strong> of the form (the corrected output from formVerify).<br>
-  Then click on the requested points in order. The tool will calculate normalized coordinates for the form schema.
+  Load a <strong>photo of the printed form</strong>. The tool will detect markers, correct perspective,
+  find the table rows and columns, then show a <strong>zoomed column crop</strong>.<br>
+  Click on the requested points to calibrate digit box positions within the column.
+  Boxes share edges, so digit stride = box width.
 </div>
 
 <input type="file" id="file-input" accept="image/*">
-<br>
-<button id="undo-btn" disabled>Undo Last Click</button>
-<button id="reset-btn" disabled>Reset All</button>
+<div id="status"></div>
+
+<div id="col-selector" style="display:none">
+  <label>Column: <select id="col-select"></select></label>
+  <span id="col-info"></span>
+</div>
+
+<div class="controls">
+  <button id="undo-btn" class="secondary" disabled>Undo</button>
+  <button id="reset-btn" class="secondary" disabled>Reset</button>
+</div>
 
 <div id="progress"></div>
 
-<div class="img-container" id="img-container" style="display:none">
-  <img id="img" alt="Rectified form">
+<div class="zoom-wrapper" id="zoom-wrapper">
+  <canvas id="zoomed-col"></canvas>
 </div>
 
 <div id="output"></div>
 
+<script src="opencv.js"></script>
 <script>
+const ZOOM = 4;
 const COLUMNS = [
-  '90L RUC', '7.6L Sharps', '20L Sharps', '25L Sharps',
-  '2.5L Specibin', '5L Specibin', '10L Specibin', '20L Specibin',
-  '25L Specibin', 'Pharma 5L', 'Pharma 20L', '50L Box', '142L Box', 'Other'
+  '90L RUC','7.6L Sharps','20L Sharps','25L Sharps',
+  '2.5L Specibin','5L Specibin','10L Specibin','20L Specibin',
+  '25L Specibin','Pharma 5L','Pharma 20L','50L Box','142L Box','Other'
 ];
-const ROWS = ['received', 'gross_kg', 'nett_kg'];
-
-// We need the user to click on these points:
-// 1. Top-left corner of first digit box in first column, first row (received, 90L RUC, digit 0)
-// 2. Top-left corner of second digit box in first column, first row (to get digit stride)
-// 3. Top-left corner of first digit box in second column, first row (to get column stride)
-// 4. Top-left corner of first digit box in first column, second row (to get row stride)
-// 5. Bottom-right corner of first digit box (to get box dimensions)
-// 6. For KG rows: top-left of 4th digit box (after decimal) to get decimal stride
 
 const CLICK_PROMPTS = [
-  { label: 'Top-left of FIRST digit box (Received / 90L RUC / digit 1)', key: 'firstBox_tl' },
-  { label: 'Top-left of SECOND digit box (Received / 90L RUC / digit 2)', key: 'secondBox_tl' },
-  { label: 'Bottom-right of FIRST digit box (Received / 90L RUC / digit 1)', key: 'firstBox_br' },
-  { label: 'Top-left of first digit box in SECOND column (Received / 7.6L Sharps / digit 1)', key: 'col2_tl' },
-  { label: 'Top-left of first digit box in SECOND ROW (Gross KG / 90L RUC / digit 1)', key: 'row2_tl' },
-  { label: 'Top-left of first digit box in THIRD ROW (Nett KG / 90L RUC / digit 1)', key: 'row3_tl' },
-  { label: 'Top-left of FOURTH digit box in Gross KG / 90L RUC (the one AFTER the comma)', key: 'decimalBox_tl' },
-  { label: 'Top-left of Tracking No box', key: 'tracking_tl' },
-  { label: 'Bottom-right of Tracking No box', key: 'tracking_br' },
+  { label: 'Top-left corner of FIRST digit box in RECEIVED row', key: 'recv_d1_tl' },
+  { label: 'Bottom-right corner of THIRD (last) digit box in RECEIVED row', key: 'recv_d3_br' },
+  { label: 'Top-left corner of FIRST digit box in GROSS KG row', key: 'gross_d1_tl' },
+  { label: 'Top-left corner of FOURTH digit box in GROSS KG row (after the comma)', key: 'gross_d4_tl' },
 ];
 
+// State
+let correctedMat = null;
+let rowBounds = null;
+let headerTop = 0;
+let columnDividers = [];
+let avgColWidth = 0;
+let selectedCol = 7;
 let clicks = [];
-let markers = [];
-let imgW = 0, imgH = 0;
+let markerEls = [];
+// Column-local pixel dimensions (before zoom)
+let colLocalW = 0, colLocalH = 0;
 
-const fileInput = document.getElementById('file-input');
-const imgEl = document.getElementById('img');
-const container = document.getElementById('img-container');
+const statusEl = document.getElementById('status');
 const progressEl = document.getElementById('progress');
 const outputEl = document.getElementById('output');
+const zoomWrapper = document.getElementById('zoom-wrapper');
+const zoomCanvas = document.getElementById('zoomed-col');
+const colSelector = document.getElementById('col-selector');
+const colSelect = document.getElementById('col-select');
+const colInfo = document.getElementById('col-info');
 const undoBtn = document.getElementById('undo-btn');
 const resetBtn = document.getElementById('reset-btn');
 
-fileInput.addEventListener('change', (e) => {
-  const file = e.target.files[0];
-  if (!file) return;
-  const url = URL.createObjectURL(file);
-  imgEl.src = url;
-  imgEl.onload = () => {
-    imgW = imgEl.naturalWidth;
-    imgH = imgEl.naturalHeight;
-    container.style.display = 'inline-block';
+// --- OpenCV init ---
+function waitForCV() {
+  return new Promise((resolve, reject) => {
+    const check = () => {
+      const c = window.cv;
+      if (c && typeof c.then === 'function') {
+        c.then(r => { delete r.then; window.cv = r; resolve(r); });
+      } else if (c && c.Mat) {
+        resolve(c);
+      } else {
+        setTimeout(check, 100);
+      }
+    };
+    check();
+    setTimeout(() => reject(new Error('OpenCV load timeout')), 30000);
+  });
+}
+
+// --- Red mask helpers ---
+function createRedMask(cv, src) {
+  const ch = new cv.MatVector();
+  cv.split(src, ch);
+  const r = ch.get(0), g = ch.get(1), b = ch.get(2);
+  const rg = new cv.Mat(); cv.subtract(r, g, rg);
+  const rb = new cv.Mat(); cv.subtract(r, b, rb);
+  const rMin = new cv.Mat(); cv.threshold(r, rMin, 80, 255, cv.THRESH_BINARY);
+  ch.delete();
+  const rgM = new cv.Mat(); cv.threshold(rg, rgM, 30, 255, cv.THRESH_BINARY); rg.delete();
+  const rbM = new cv.Mat(); cv.threshold(rb, rbM, 30, 255, cv.THRESH_BINARY); rb.delete();
+  const mask = new cv.Mat();
+  cv.bitwise_and(rgM, rbM, mask); cv.bitwise_and(mask, rMin, mask);
+  rgM.delete(); rbM.delete(); rMin.delete();
+  return mask;
+}
+
+// --- Pipeline ---
+async function runPipeline(cv, imageFile) {
+  setStatus('Loading image...');
+  const bitmap = await createImageBitmap(imageFile);
+  const canvas = document.createElement('canvas');
+  canvas.width = bitmap.width; canvas.height = bitmap.height;
+  canvas.getContext('2d').drawImage(bitmap, 0, 0);
+  const imgData = canvas.getContext('2d').getImageData(0, 0, canvas.width, canvas.height);
+  const src = cv.matFromImageData(imgData);
+
+  // ArUco detection
+  setStatus('Detecting markers...');
+  const gray = new cv.Mat(); cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
+  const dict = cv.getPredefinedDictionary(cv.DICT_4X4_50);
+  const params = new cv.aruco_DetectorParameters();
+  const refine = new cv.aruco_RefineParameters(10, 3, true);
+  const det = new cv.aruco_ArucoDetector(dict, params, refine);
+  const corners = new cv.MatVector(); const ids = new cv.Mat(); const rej = new cv.MatVector();
+  det.detectMarkers(gray, corners, ids, rej);
+  gray.delete();
+
+  const markers = {};
+  for (let i = 0; i < ids.rows; i++) {
+    const id = ids.intAt(i, 0);
+    const c = corners.get(i);
+    const pts = [];
+    for (let j = 0; j < 4; j++) pts.push({ x: c.floatAt(0, j*2), y: c.floatAt(0, j*2+1) });
+    c.delete();
+    if (id >= 0 && id <= 3) markers[id] = pts;
+  }
+  corners.delete(); ids.delete(); rej.delete();
+  det.delete(); refine.delete(); params.delete(); dict.delete();
+
+  if (Object.keys(markers).length < 4) {
+    throw new Error(`Only found ${Object.keys(markers).length}/4 markers`);
+  }
+
+  // Perspective correction (outer corners)
+  setStatus('Correcting perspective...');
+  const tl = markers[0][0], tr = markers[1][1], br = markers[2][2], bl = markers[3][3];
+  const W = 2339, H = 1654;
+  const srcPts = cv.matFromArray(4, 1, cv.CV_32FC2, [tl.x,tl.y, tr.x,tr.y, br.x,br.y, bl.x,bl.y]);
+  const dstPts = cv.matFromArray(4, 1, cv.CV_32FC2, [0,0, W,0, W,H, 0,H]);
+  const M = cv.getPerspectiveTransform(srcPts, dstPts);
+  const corrected = new cv.Mat();
+  cv.warpPerspective(src, corrected, M, new cv.Size(W, H),
+    cv.INTER_LINEAR, cv.BORDER_CONSTANT, new cv.Scalar(255,255,255,255));
+  srcPts.delete(); dstPts.delete(); M.delete(); src.delete();
+
+  // Detect horizontal lines
+  setStatus('Detecting rows...');
+  const redMask = createRedMask(cv, corrected);
+  const hK = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(200, 1));
+  const hLines = new cv.Mat();
+  cv.morphologyEx(redMask, hLines, cv.MORPH_OPEN, hK); hK.delete();
+
+  const hProf = new Float64Array(H);
+  for (let y = 0; y < H; y++) {
+    let s = 0; for (let x = 0; x < W; x++) s += hLines.ucharAt(y, x);
+    hProf[y] = s / 255;
+  }
+  hLines.delete();
+
+  const hMax = Math.max(...Array.from(hProf));
+  const hThr = hMax * 0.3;
+  const hPeaks = [];
+  for (let y = 1; y < H-1; y++) {
+    if (hProf[y] > hThr && hProf[y] >= hProf[y-1] && hProf[y] >= hProf[y+1])
+      hPeaks.push({ y, s: hProf[y] });
+  }
+  hPeaks.sort((a,b) => b.s - a.s);
+  const hSel = [];
+  for (const p of hPeaks) { if (!hSel.some(s => Math.abs(s-p.y)<10)) hSel.push(p.y); }
+  hSel.sort((a,b) => a-b);
+
+  let bestRows = null, bestScore = Infinity;
+  for (let a = 0; a < hSel.length; a++)
+    for (let b = a+1; b < hSel.length; b++) {
+      const h0 = hSel[b]-hSel[a]; if (h0<30||h0>120) continue;
+      for (let c = b+1; c < hSel.length; c++) {
+        const h1 = hSel[c]-hSel[b]; if (h1<30||h1>120) continue;
+        for (let d = c+1; d < hSel.length; d++) {
+          const h2 = hSel[d]-hSel[c]; if (h2<30||h2>120) continue;
+          const avg = (h0+h1+h2)/3;
+          const v = Math.abs(h0-avg)+Math.abs(h1-avg)+Math.abs(h2-avg);
+          if (v < bestScore) { bestScore = v; bestRows = [hSel[a],hSel[b],hSel[c],hSel[d]]; }
+        }
+      }
+    }
+  if (!bestRows) throw new Error('Could not detect row boundaries');
+  rowBounds = bestRows;
+
+  const headerCand = hSel.filter(y => y < bestRows[0] && y > bestRows[0]-150);
+  headerTop = headerCand.length > 0 ? headerCand[headerCand.length-1] : bestRows[0]-57;
+
+  // Detect columns
+  setStatus('Detecting columns...');
+  const tableTop = headerTop, tableBot = bestRows[3], tableH = tableBot - tableTop;
+  const strip = corrected.roi(new cv.Rect(0, tableTop, W, tableH));
+  const stripMask = createRedMask(cv, strip); strip.delete();
+  const eK = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(3, 1));
+  const eroded = new cv.Mat(); cv.erode(stripMask, eroded, eK); eK.delete(); stripMask.delete();
+
+  const vProf = new Float64Array(W);
+  for (let x = 0; x < W; x++) {
+    let s = 0; for (let y = 0; y < tableH; y++) s += eroded.ucharAt(y, x);
+    vProf[x] = s / 255;
+  }
+  eroded.delete(); redMask.delete();
+
+  // Gaussian blur
+  const blurred = new Float64Array(W);
+  const sig = 3, kH = 7, kern = [];
+  let ks = 0;
+  for (let i = -kH; i <= kH; i++) { const v = Math.exp(-i*i/(2*sig*sig)); kern.push(v); ks += v; }
+  for (let i = 0; i < kern.length; i++) kern[i] /= ks;
+  for (let x = 0; x < W; x++) {
+    let v = 0;
+    for (let k = 0; k < kern.length; k++) v += vProf[Math.max(0,Math.min(W-1,x+k-kH))] * kern[k];
+    blurred[x] = v;
+  }
+
+  const vMax = Math.max(...Array.from(blurred));
+  const vThr = vMax * 0.35;
+  const vPeaks = [];
+  for (let x = 2; x < W-2; x++) {
+    if (blurred[x]>vThr && blurred[x]>blurred[x-1] && blurred[x]>blurred[x+1] && blurred[x]>blurred[x-2] && blurred[x]>blurred[x+2])
+      vPeaks.push({ x, s: blurred[x] });
+  }
+  vPeaks.sort((a,b) => b.s - a.s);
+  const vSel = [];
+  for (const p of vPeaks) { if (!vSel.some(s => Math.abs(s.x-p.x)<80)) vSel.push(p); }
+  vSel.sort((a,b) => a.x - b.x);
+
+  // Chain-based column detection
+  const adjSp = [];
+  for (let i = 1; i < vSel.length; i++) adjSp.push(vSel[i].x - vSel[i-1].x);
+  const goodSp = adjSp.filter(s => s >= 100 && s <= 250).sort((a,b) => a-b);
+  const medSp = goodSp.length > 0 ? goodSp[Math.floor(goodSp.length/2)] : 157;
+
+  let bestChain = [];
+  for (let st = 0; st < vSel.length; st++) {
+    const chain = [vSel[st].x];
+    for (let i = st+1; i < vSel.length; i++) {
+      const exp = chain[chain.length-1] + medSp;
+      if (Math.abs(vSel[i].x - exp) < medSp * 0.3) chain.push(vSel[i].x);
+    }
+    if (chain.length > bestChain.length) bestChain = chain;
+  }
+  let refSp = medSp;
+  if (bestChain.length > 1) {
+    const cs = []; for (let i=1;i<bestChain.length;i++) cs.push(bestChain[i]-bestChain[i-1]);
+    refSp = cs.reduce((a,b)=>a+b,0)/cs.length;
+  }
+  while (bestChain.length < 15) {
+    const nx = bestChain[bestChain.length-1] + refSp;
+    if (nx < W-10) bestChain.push(Math.round(nx));
+    else { const px = bestChain[0]-refSp; if (px>=10) bestChain.unshift(Math.round(px)); else break; }
+  }
+  columnDividers = bestChain.slice(0, Math.min(14, bestChain.length));
+  avgColWidth = Math.round(refSp);
+
+  correctedMat = corrected;
+  setStatus(`Done: ${columnDividers.length} columns, rows at ${bestRows.join(', ')}, avg width ${avgColWidth}px`);
+  return corrected;
+}
+
+// --- Column crop rendering ---
+function renderColumn(ci) {
+  const cv = window.cv;
+  selectedCol = ci;
+  const colLeft = columnDividers[ci];
+  const colRight = ci < columnDividers.length - 1
+    ? columnDividers[ci + 1]
+    : Math.min(2339, colLeft + avgColWidth);
+  const tableTop2 = headerTop;
+  const tableBot2 = rowBounds[3];
+  const colW = Math.min(colRight - colLeft, 2339 - colLeft);
+  const colH = tableBot2 - tableTop2;
+
+  // Use avgColWidth for consistent display (pad with white if needed)
+  const displayW = Math.max(colW, avgColWidth);
+  colLocalW = displayW;
+  colLocalH = colH;
+
+  const roi = correctedMat.roi(new cv.Rect(Math.round(colLeft), tableTop2, Math.round(colW), colH));
+  let vis;
+  if (colW < avgColWidth) {
+    vis = new cv.Mat(colH, displayW, correctedMat.type(), new cv.Scalar(255,255,255,255));
+    const dest = vis.roi(new cv.Rect(0, 0, colW, colH));
+    roi.copyTo(dest); dest.delete();
+  } else {
+    vis = new cv.Mat(); roi.copyTo(vis);
+  }
+  roi.delete();
+
+  // Draw row boundaries as cyan dashed lines
+  for (const ry of rowBounds) {
+    const ly = ry - tableTop2;
+    cv.line(vis, new cv.Point(0, ly), new cv.Point(displayW, ly), new cv.Scalar(0,200,200,180), 1);
+  }
+
+  // Render to small canvas, then zoom
+  const smallCanvas = document.createElement('canvas');
+  smallCanvas.width = displayW; smallCanvas.height = colH;
+  cv.imshow(smallCanvas, vis);
+  vis.delete();
+
+  zoomCanvas.width = displayW * ZOOM;
+  zoomCanvas.height = colH * ZOOM;
+  const ctx = zoomCanvas.getContext('2d');
+  ctx.imageSmoothingEnabled = false;
+  ctx.drawImage(smallCanvas, 0, 0, displayW, colH, 0, 0, displayW * ZOOM, colH * ZOOM);
+
+  // Redraw existing click markers
+  redrawMarkers();
+
+  zoomWrapper.style.display = 'block';
+  colInfo.textContent = ` — ${avgColWidth}px wide, rows: ${rowBounds.map(r => r - tableTop2).join(', ')}px`;
+}
+
+// --- Click handling ---
+function setupClicks() {
+  zoomCanvas.addEventListener('click', (e) => {
+    if (clicks.length >= CLICK_PROMPTS.length) return;
+    const rect = zoomCanvas.getBoundingClientRect();
+    const px = (e.clientX - rect.left) / ZOOM;
+    const py = (e.clientY - rect.top) / ZOOM;
+
+    clicks.push({ x: px, y: py, key: CLICK_PROMPTS[clicks.length].key });
+    addMarkerAt(e.clientX - rect.left, e.clientY - rect.top);
+
+    undoBtn.disabled = false;
+    resetBtn.disabled = false;
+    updateProgress();
+
+    if (clicks.length === CLICK_PROMPTS.length) computeResults();
+  });
+
+  undoBtn.addEventListener('click', () => {
+    if (clicks.length === 0) return;
+    clicks.pop();
+    const m = markerEls.pop(); if (m) m.remove();
+    undoBtn.disabled = clicks.length === 0;
+    outputEl.style.display = 'none';
+    updateProgress();
+  });
+
+  resetBtn.addEventListener('click', () => {
     clicks = [];
     clearMarkers();
+    outputEl.style.display = 'none';
     updateProgress();
-    resetBtn.disabled = false;
-  };
-});
+  });
+}
 
-container.addEventListener('click', (e) => {
-  if (clicks.length >= CLICK_PROMPTS.length) return;
-
-  const rect = imgEl.getBoundingClientRect();
-  const scaleX = imgW / rect.width;
-  const scaleY = imgH / rect.height;
-  const px = (e.clientX - rect.left) * scaleX;
-  const py = (e.clientY - rect.top) * scaleY;
-
-  clicks.push({ x: px, y: py, key: CLICK_PROMPTS[clicks.length].key });
-
-  // Add visual marker
-  const marker = document.createElement('div');
-  marker.className = 'marker done';
-  marker.style.left = (e.clientX - rect.left) + 'px';
-  marker.style.top = (e.clientY - rect.top) + 'px';
-  container.appendChild(marker);
-  markers.push(marker);
-
-  undoBtn.disabled = false;
-  updateProgress();
-
-  if (clicks.length === CLICK_PROMPTS.length) {
-    computeSchema();
-  }
-});
-
-undoBtn.addEventListener('click', () => {
-  if (clicks.length === 0) return;
-  clicks.pop();
-  const m = markers.pop();
-  if (m) m.remove();
-  undoBtn.disabled = clicks.length === 0;
-  outputEl.style.display = 'none';
-  updateProgress();
-});
-
-resetBtn.addEventListener('click', () => {
-  clicks = [];
-  clearMarkers();
-  outputEl.style.display = 'none';
-  updateProgress();
-});
+function addMarkerAt(screenX, screenY) {
+  const m = document.createElement('div');
+  m.className = 'marker';
+  m.style.left = screenX + 'px';
+  m.style.top = screenY + 'px';
+  // Add label
+  const label = document.createElement('span');
+  label.style.cssText = 'position:absolute;left:10px;top:-4px;font-size:11px;color:#333;background:rgba(255,255,255,0.85);padding:0 3px;border-radius:2px;white-space:nowrap;';
+  label.textContent = `${clicks.length}`;
+  m.appendChild(label);
+  zoomWrapper.appendChild(m);
+  markerEls.push(m);
+}
 
 function clearMarkers() {
-  markers.forEach(m => m.remove());
-  markers = [];
+  markerEls.forEach(m => m.remove());
+  markerEls = [];
   undoBtn.disabled = true;
+}
+
+function redrawMarkers() {
+  // Remove old DOM markers and recreate from clicks
+  clearMarkers();
+  for (let i = 0; i < clicks.length; i++) {
+    const c = clicks[i];
+    addMarkerAt(c.x * ZOOM, c.y * ZOOM);
+  }
+  undoBtn.disabled = clicks.length === 0;
 }
 
 function updateProgress() {
   if (clicks.length >= CLICK_PROMPTS.length) {
     progressEl.innerHTML = '<strong style="color:#4caf50">All points captured! See results below.</strong>';
   } else {
-    const prompt = CLICK_PROMPTS[clicks.length];
-    progressEl.innerHTML = `<strong>Click ${clicks.length + 1}/${CLICK_PROMPTS.length}:</strong> ${prompt.label}`;
+    const p = CLICK_PROMPTS[clicks.length];
+    progressEl.innerHTML = `<strong>Click ${clicks.length + 1}/${CLICK_PROMPTS.length}:</strong> ${p.label}`;
   }
 }
 
-function get(key) {
-  return clicks.find(c => c.key === key);
-}
+// --- Compute results ---
+function computeResults() {
+  const get = key => clicks.find(c => c.key === key);
+  const recvTL = get('recv_d1_tl');
+  const recvBR = get('recv_d3_br');
+  const grossTL = get('gross_d1_tl');
+  const grossD4 = get('gross_d4_tl');
 
-function computeSchema() {
-  const first = get('firstBox_tl');
-  const second = get('secondBox_tl');
-  const firstBR = get('firstBox_br');
-  const col2 = get('col2_tl');
-  const row2 = get('row2_tl');
-  const row3 = get('row3_tl');
-  const decimal = get('decimalBox_tl');
-  const trackTL = get('tracking_tl');
-  const trackBR = get('tracking_br');
+  // 3 boxes share edges, so total width = 3 * BOX_W
+  const boxW = (recvBR.x - recvTL.x) / 3;
+  const boxH = recvBR.y - recvTL.y;
 
-  // Box dimensions (normalized)
-  const boxW = (firstBR.x - first.x) / imgW;
-  const boxH = (firstBR.y - first.y) / imgH;
+  // Digit stride = box width (shared edges)
+  const digitStride = boxW;
 
-  // Digit stride (between consecutive boxes in same field)
-  const digitStride = (second.x - first.x) / imgW;
+  // Decimal gap: 4th box left - (1st box left + 3 * boxW)
+  // Assume same x alignment across rows
+  const decimalGap = grossD4.x - (grossTL.x + 3 * boxW);
+  const decimalStride = boxW + decimalGap;
 
-  // Column stride (between same digit position in adjacent columns)
-  const colStride = (col2.x - first.x) / imgW;
+  // Group widths
+  const recvGroupW = 3 * boxW;
+  const kgGroupW = 3 * boxW + decimalGap + boxW;
 
-  // Row positions
-  const row1Y = first.y / imgH;
-  const row2Y = row2.y / imgH;
-  const row3Y = row3.y / imgH;
+  // Offsets from column left edge (in column-local coords)
+  const offsetX = recvTL.x;
+  const centeringOffsetX = offsetX - (avgColWidth - recvGroupW) / 2;
 
-  // First column x
-  const col1X = first.x / imgW;
+  // Row offsets from row boundary (in column-local coords)
+  const tableTop2 = headerTop;
+  const row0Top = rowBounds[0] - tableTop2; // received row top boundary (local)
+  const row1Top = rowBounds[1] - tableTop2; // gross kg row top boundary (local)
+  const row0H = rowBounds[1] - rowBounds[0];
+  const row1H = rowBounds[2] - rowBounds[1];
 
-  // Decimal stride (distance from 3rd box to 4th box, which crosses the comma)
-  // decimal box is the 4th box (index 3), so stride from box 2 (index 2) to box 3 (index 3)
-  // box 2 top-left = first.x + 2*digitStride*imgW
-  const box3X = first.x + 2 * digitStride * imgW;
-  const decimalStride = (decimal.x - box3X) / imgW;
+  const recvYOffset = recvTL.y - row0Top;
+  const grossYOffset = grossTL.y - row1Top;
+  const recvYCentering = recvYOffset - (row0H - boxH) / 2;
+  const grossYCentering = grossYOffset - (row1H - boxH) / 2;
 
-  // Column x positions
-  const colXPositions = [];
-  for (let i = 0; i < 14; i++) {
-    colXPositions.push(col1X + i * colStride);
-  }
+  // Generate code
+  const code = `// --- Calibrated from column ${selectedCol} (${COLUMNS[selectedCol]}) ---
+// Image: 2339×1654 (A4 200dpi, outer marker corners)
+// Avg column width: ${avgColWidth}px
+// Row bounds: [${rowBounds.join(', ')}]
 
-  // Tracking box
-  const trackX = trackTL.x / imgW;
-  const trackY = trackTL.y / imgH;
-  const trackW = (trackBR.x - trackTL.x) / imgW;
-  const trackH = (trackBR.y - trackTL.y) / imgH;
+/** Digit box width in pixels */
+const BOX_W = ${Math.round(boxW)};
+/** Digit box height in pixels */
+const BOX_H = ${Math.round(boxH)};
+/** Stride between adjacent digit boxes (= BOX_W, shared edges) */
+const DIGIT_STRIDE = ${Math.round(digitStride)};
+/** Gap between d2 right edge and d3 left edge (comma space) */
+const DECIMAL_GAP = ${Math.round(decimalGap)};
+/** Full stride across decimal: left-of-d2 → left-of-d3 */
+const DECIMAL_STRIDE = BOX_W + DECIMAL_GAP;  // = ${Math.round(decimalStride)}
 
-  const result = {
-    imageSize: `${imgW} x ${imgH}`,
-    boxW: boxW.toFixed(6),
-    boxH: boxH.toFixed(6),
-    digitStride: digitStride.toFixed(6),
-    decimalStride: decimalStride.toFixed(6),
-    colStride: colStride.toFixed(6),
-    col1X: col1X.toFixed(6),
-    row1Y: row1Y.toFixed(6),
-    row2Y: row2Y.toFixed(6),
-    row3Y: row3Y.toFixed(6),
-    tracking: { x: trackX.toFixed(6), y: trackY.toFixed(6), w: trackW.toFixed(6), h: trackH.toFixed(6) },
-    COL_X: colXPositions.map(v => v.toFixed(4)),
-  };
+// --- Positioning diagnostics ---
+// Received group left offset from column left: ${offsetX.toFixed(1)}px
+// Computed centering offset: ${((avgColWidth - recvGroupW) / 2).toFixed(1)}px
+// Centering error (x): ${centeringOffsetX.toFixed(1)}px (positive = shifted right)
+//
+// Received box y-offset from row top: ${recvYOffset.toFixed(1)}px
+// Computed centering (y): ${((row0H - boxH) / 2).toFixed(1)}px
+// Centering error (y): ${recvYCentering.toFixed(1)}px (positive = shifted down)
+//
+// Gross KG box y-offset from row top: ${grossYOffset.toFixed(1)}px
+// Gross KG centering error (y): ${grossYCentering.toFixed(1)}px
 
-  // Generate code snippet
-  const code = `// --- Measured from rectified image (${imgW}x${imgH}) ---
-
-// Column x positions (first digit box in each column)
-const COL_X: number[] = [
-  ${colXPositions.map(v => v.toFixed(4)).join(', ')},
-];
-
-// Row y positions
-const ROW_Y: number[] = [${row1Y.toFixed(4)}, ${row2Y.toFixed(4)}, ${row3Y.toFixed(4)}];
-
-// Digit box dimensions (uniform for all boxes)
-const BOX_W = ${boxW.toFixed(4)};
-const BOX_H = ${boxH.toFixed(4)};
-
-// Stride between consecutive digit boxes
-const DIGIT_STRIDE = ${digitStride.toFixed(4)};
-
-// Stride across the decimal separator
-const DECIMAL_STRIDE = ${decimalStride.toFixed(4)};
-
-// Tracking box
-tracking: {
-  id: 'tracking_no',
-  row: 'tracking',
-  col: 'tracking_no',
-  x: ${trackX.toFixed(4)},
-  y: ${trackY.toFixed(4)},
-  w: ${trackW.toFixed(4)},
-  h: ${trackH.toFixed(4)},
-},`;
+// --- Raw measurements (sub-pixel) ---
+// BOX_W = ${boxW.toFixed(2)}px
+// BOX_H = ${boxH.toFixed(2)}px
+// DECIMAL_GAP = ${decimalGap.toFixed(2)}px
+// recv d1 TL: (${recvTL.x.toFixed(1)}, ${recvTL.y.toFixed(1)}) [column-local]
+// recv d3 BR: (${recvBR.x.toFixed(1)}, ${recvBR.y.toFixed(1)}) [column-local]
+// gross d1 TL: (${grossTL.x.toFixed(1)}, ${grossTL.y.toFixed(1)}) [column-local]
+// gross d4 TL: (${grossD4.x.toFixed(1)}, ${grossD4.y.toFixed(1)}) [column-local]`;
 
   outputEl.textContent = code;
   outputEl.style.display = 'block';
 }
 
-updateProgress();
+function setStatus(msg, isError) {
+  statusEl.textContent = msg;
+  statusEl.className = isError ? 'error' : '';
+}
+
+// --- Init ---
+document.getElementById('file-input').addEventListener('change', async (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+
+  try {
+    setStatus('Loading OpenCV...');
+    const cv = await waitForCV();
+    await runPipeline(cv, file);
+
+    // Populate column selector
+    colSelect.innerHTML = '';
+    for (let i = 0; i < columnDividers.length; i++) {
+      const opt = document.createElement('option');
+      opt.value = i;
+      opt.textContent = `${i}: ${COLUMNS[i] || 'Col ' + i} (x=${columnDividers[i]})`;
+      colSelect.appendChild(opt);
+    }
+    colSelect.value = Math.min(selectedCol, columnDividers.length - 1);
+    selectedCol = parseInt(colSelect.value);
+    colSelector.style.display = 'block';
+
+    colSelect.addEventListener('change', () => {
+      selectedCol = parseInt(colSelect.value);
+      clicks = [];
+      clearMarkers();
+      outputEl.style.display = 'none';
+      renderColumn(selectedCol);
+      updateProgress();
+    });
+
+    renderColumn(selectedCol);
+    setupClicks();
+    updateProgress();
+  } catch (err) {
+    setStatus('Error: ' + err.message, true);
+    console.error(err);
+  }
+});
 </script>
 </body>
 </html>
