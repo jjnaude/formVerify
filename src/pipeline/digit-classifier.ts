@@ -134,11 +134,19 @@ function preprocessWithCC(cv: CV, src: CV): Float32Array {
     src.copyTo(gray);
   }
 
-  // 2. Adaptive threshold → binary (ink=255, paper=0)
-  const binary = new cv.Mat();
-  cv.adaptiveThreshold(gray, binary, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C,
-    cv.THRESH_BINARY_INV, 15, 10);
+  // 2. CLAHE + Otsu threshold → binary (ink=255, paper=0)
+  // Uses the same binarization as preprocessCell to avoid discrepancies
+  // where adaptive threshold breaks thin strokes that Otsu preserves.
+  const clahe = new cv.CLAHE(2.0, new cv.Size(4, 4));
+  const enhanced = new cv.Mat();
+  clahe.apply(gray, enhanced);
   gray.delete();
+  clahe.delete();
+
+  const otsu = new cv.Mat();
+  cv.threshold(enhanced, otsu, 0, 255, cv.THRESH_BINARY_INV | cv.THRESH_OTSU);
+  enhanced.delete();
+  const binary = otsu;
 
   const w = binary.cols, h = binary.rows;
 
