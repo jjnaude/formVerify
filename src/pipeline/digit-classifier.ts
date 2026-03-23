@@ -142,12 +142,13 @@ function preprocessWithCC(cv: CV, src: CV): Float32Array {
 
   const w = binary.cols, h = binary.rows;
 
-  // 3. Try to find an isolated component (pass 1)
-  let bestLabel = findLargestIsolatedComponent(cv, binary);
+  // 3. Try to find isolated components (pass 1)
+  // Merge ALL non-edge-touching components — they're all parts of the same digit
+  let isolatedLabels = findIsolatedComponents(cv, binary);
 
   let separated: CV | null = null;
-  if (bestLabel < 0) {
-    // No isolated component — force separation by clearing pixels one row/column
+  if (isolatedLabels.length === 0) {
+    // No isolated components — force separation by clearing pixels one row/column
     // in from each edge. This breaks the connection between digit strokes and
     // the printed box border.
     separated = new cv.Mat();
@@ -165,23 +166,23 @@ function preprocessWithCC(cv: CV, src: CV): Float32Array {
     }
 
     // Re-run CC on the separated image
-    bestLabel = findLargestIsolatedComponent(cv, separated);
+    isolatedLabels = findIsolatedComponents(cv, separated);
   }
 
   const source = separated || binary;
   let result: Float32Array;
 
-  if (bestLabel >= 0) {
-    result = extractComponentToMNIST(cv, source, bestLabel);
+  if (isolatedLabels.length > 0) {
+    result = extractComponentsToMNIST(cv, source, isolatedLabels);
   } else {
-    // Still no isolated component even after separation — use the largest
+    // Still no isolated components even after separation — use the largest
     // component regardless (best effort)
     const fallbackLabel = findLargestComponent(cv, source);
     if (fallbackLabel >= 0) {
-      result = extractComponentToMNIST(cv, source, fallbackLabel);
+      result = extractComponentsToMNIST(cv, source, [fallbackLabel]);
     } else {
       // Empty image — return blank
-      result = new Float32Array(784);
+      result = new Float32Array(IMG_DIM * IMG_DIM);
     }
   }
 
@@ -192,20 +193,21 @@ function preprocessWithCC(cv: CV, src: CV): Float32Array {
 }
 
 /**
- * Find the largest connected component that does NOT touch any image edge.
- * Returns the label, or -1 if none found.
+ * Find ALL connected components that do NOT touch any image edge.
+ * Returns an array of labels (may be empty). This merges all digit
+ * fragments that were separated by thin stroke breaks (e.g. the
+ * horizontal bar of a "4" breaking away from the vertical stroke).
  */
-function findLargestIsolatedComponent(cv: CV, binary: CV): number {
+function findIsolatedComponents(cv: CV, binary: CV): number[] {
   const labels = new cv.Mat();
   const stats = new cv.Mat();
   const centroids = new cv.Mat();
   const numLabels = cv.connectedComponentsWithStats(binary, labels, stats, centroids);
 
   const w = binary.cols, h = binary.rows;
-  const minArea = w * h * 0.05;
+  const minArea = w * h * 0.02; // lower threshold (2%) to catch small fragments
 
-  let bestLabel = -1;
-  let bestArea = 0;
+  const isolated: number[] = [];
   for (let label = 1; label < numLabels; label++) {
     const left = stats.intAt(label, cv.CC_STAT_LEFT);
     const top = stats.intAt(label, cv.CC_STAT_TOP);
@@ -215,9 +217,8 @@ function findLargestIsolatedComponent(cv: CV, binary: CV): number {
 
     if (area < minArea) continue;
     const touchesEdge = (left <= 0 || top <= 0 || left + cw >= w || top + ch >= h);
-    if (!touchesEdge && area > bestArea) {
-      bestLabel = label;
-      bestArea = area;
+    if (!touchesEdge) {
+      isolated.push(label);
     }
   }
 
@@ -225,7 +226,7 @@ function findLargestIsolatedComponent(cv: CV, binary: CV): number {
   stats.delete();
   centroids.delete();
 
-  return bestLabel;
+  return isolated;
 }
 
 /**
@@ -256,31 +257,45 @@ function findLargestComponent(cv: CV, binary: CV): number {
 }
 
 /**
- * Extract a component's mask and place it into a 28×28 MNIST frame.
+ * Extract one or more components' masks, merge them, and place into a 32×32 frame.
+ *
+ * Merging all isolated components prevents oversegmentation where a digit's
+ * thin strokes break into multiple pieces (e.g. the horizontal bar of a "4").
  *
  * Strategy to minimize resampling:
- * 1. Try placing the mask at native resolution into a 26×26 area
- *    (centered by center of mass at pixel 14,14).
- * 2. If it doesn't fit, downscale by exactly 2× using 2×2 pixel binning
- *    (no interpolation artifacts) and try again.
- * 3. If still doesn't fit after 2× bin, place anyway (clip to 28×28).
+ * 1. Try placing the merged mask at native resolution into a 30×30 area
+ *    (centered by center of mass at pixel 16,16).
+ * 2. If it doesn't fit, downscale by exactly 2× using 2×2 pixel binning.
+ * 3. If still doesn't fit after 2× bin, place anyway (clip to 32×32).
  */
-function extractComponentToMNIST(cv: CV, binary: CV, targetLabel: number): Float32Array {
+function extractComponentsToMNIST(cv: CV, binary: CV, targetLabels: number[]): Float32Array {
   const labels = new cv.Mat();
   const stats = new cv.Mat();
   const centroids = new cv.Mat();
   cv.connectedComponentsWithStats(binary, labels, stats, centroids);
 
-  const compLeft = stats.intAt(targetLabel, cv.CC_STAT_LEFT);
-  const compTop = stats.intAt(targetLabel, cv.CC_STAT_TOP);
-  const compW = stats.intAt(targetLabel, cv.CC_STAT_WIDTH);
-  const compH = stats.intAt(targetLabel, cv.CC_STAT_HEIGHT);
+  // Compute merged bounding box across all target labels
+  let mergedLeft = binary.cols, mergedTop = binary.rows;
+  let mergedRight = 0, mergedBottom = 0;
+  for (const label of targetLabels) {
+    const left = stats.intAt(label, cv.CC_STAT_LEFT);
+    const top = stats.intAt(label, cv.CC_STAT_TOP);
+    const cw = stats.intAt(label, cv.CC_STAT_WIDTH);
+    const ch = stats.intAt(label, cv.CC_STAT_HEIGHT);
+    mergedLeft = Math.min(mergedLeft, left);
+    mergedTop = Math.min(mergedTop, top);
+    mergedRight = Math.max(mergedRight, left + cw);
+    mergedBottom = Math.max(mergedBottom, top + ch);
+  }
+  const compW = mergedRight - mergedLeft;
+  const compH = mergedBottom - mergedTop;
 
-  // Build mask of just this component at its bounding box
+  // Build merged mask at the bounding box
+  const labelSet = new Set(targetLabels);
   const mask = new cv.Mat(compH, compW, cv.CV_8UC1, new cv.Scalar(0));
   for (let y = 0; y < compH; y++) {
     for (let x = 0; x < compW; x++) {
-      if (labels.intAt(compTop + y, compLeft + x) === targetLabel) {
+      if (labelSet.has(labels.intAt(mergedTop + y, mergedLeft + x))) {
         mask.ucharPtr(y, x)[0] = 255;
       }
     }
