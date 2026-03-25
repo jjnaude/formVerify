@@ -9,7 +9,7 @@
  * 4. Locate digit boxes within each column using fixed offsets
  *
  * Calibrated constants measured from binary threshold + vertical projection
- * on the rectified 2339×1654 image.
+ * on the rectified 2339x1654 image.
  */
 
 import { preprocessCell } from './preprocess.js';

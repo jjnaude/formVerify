@@ -1,0 +1,265 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>formVerify — Calibration Tool</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: system-ui, sans-serif; padding: 16px; background: #f5f5f5; }
+  h1 { font-size: 1.2rem; margin-bottom: 8px; }
+  #instructions { background: #e3f2fd; padding: 12px; border-radius: 8px; margin-bottom: 12px; font-size: 0.9rem; line-height: 1.5; }
+  #instructions strong { color: #1a73e8; }
+  .img-container { position: relative; display: inline-block; cursor: crosshair; border: 2px solid #333; }
+  .img-container img { display: block; max-width: 100%; }
+  .marker { position: absolute; width: 10px; height: 10px; background: red; border-radius: 50%; transform: translate(-5px, -5px); pointer-events: none; border: 1px solid white; }
+  .marker.done { background: #4caf50; }
+  #file-input { margin-bottom: 12px; }
+  #output { margin-top: 16px; background: white; border: 1px solid #ddd; border-radius: 8px; padding: 12px; font-family: monospace; font-size: 0.8rem; white-space: pre-wrap; max-height: 400px; overflow-y: auto; display: none; }
+  #progress { font-size: 0.9rem; margin-top: 8px; color: #333; }
+  button { padding: 8px 16px; border: none; border-radius: 4px; background: #1a73e8; color: white; cursor: pointer; font-size: 0.9rem; margin: 4px; }
+  button:disabled { background: #ccc; }
+  #undo-btn { background: #e0e0e0; color: #333; }
+</style>
+</head>
+<body>
+<h1>formVerify Calibration Tool</h1>
+
+<div id="instructions">
+  Load a <strong>rectified image</strong> of the form (the corrected output from formVerify).<br>
+  Then click on the requested points in order. The tool will calculate normalized coordinates for the form schema.
+</div>
+
+<input type="file" id="file-input" accept="image/*">
+<br>
+<button id="undo-btn" disabled>Undo Last Click</button>
+<button id="reset-btn" disabled>Reset All</button>
+
+<div id="progress"></div>
+
+<div class="img-container" id="img-container" style="display:none">
+  <img id="img" alt="Rectified form">
+</div>
+
+<div id="output"></div>
+
+<script>
+const COLUMNS = [
+  '90L RUC', '7.6L Sharps', '20L Sharps', '25L Sharps',
+  '2.5L Specibin', '5L Specibin', '10L Specibin', '20L Specibin',
+  '25L Specibin', 'Pharma 5L', 'Pharma 20L', '50L Box', '142L Box', 'Other'
+];
+const ROWS = ['received', 'gross_kg', 'nett_kg'];
+
+// We need the user to click on these points:
+// 1. Top-left corner of first digit box in first column, first row (received, 90L RUC, digit 0)
+// 2. Top-left corner of second digit box in first column, first row (to get digit stride)
+// 3. Top-left corner of first digit box in second column, first row (to get column stride)
+// 4. Top-left corner of first digit box in first column, second row (to get row stride)
+// 5. Bottom-right corner of first digit box (to get box dimensions)
+// 6. For KG rows: top-left of 4th digit box (after decimal) to get decimal stride
+
+const CLICK_PROMPTS = [
+  { label: 'Top-left of FIRST digit box (Received / 90L RUC / digit 1)', key: 'firstBox_tl' },
+  { label: 'Top-left of SECOND digit box (Received / 90L RUC / digit 2)', key: 'secondBox_tl' },
+  { label: 'Bottom-right of FIRST digit box (Received / 90L RUC / digit 1)', key: 'firstBox_br' },
+  { label: 'Top-left of first digit box in SECOND column (Received / 7.6L Sharps / digit 1)', key: 'col2_tl' },
+  { label: 'Top-left of first digit box in SECOND ROW (Gross KG / 90L RUC / digit 1)', key: 'row2_tl' },
+  { label: 'Top-left of first digit box in THIRD ROW (Nett KG / 90L RUC / digit 1)', key: 'row3_tl' },
+  { label: 'Top-left of FOURTH digit box in Gross KG / 90L RUC (the one AFTER the comma)', key: 'decimalBox_tl' },
+  { label: 'Top-left of Tracking No box', key: 'tracking_tl' },
+  { label: 'Bottom-right of Tracking No box', key: 'tracking_br' },
+];
+
+let clicks = [];
+let markers = [];
+let imgW = 0, imgH = 0;
+
+const fileInput = document.getElementById('file-input');
+const imgEl = document.getElementById('img');
+const container = document.getElementById('img-container');
+const progressEl = document.getElementById('progress');
+const outputEl = document.getElementById('output');
+const undoBtn = document.getElementById('undo-btn');
+const resetBtn = document.getElementById('reset-btn');
+
+fileInput.addEventListener('change', (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+  const url = URL.createObjectURL(file);
+  imgEl.src = url;
+  imgEl.onload = () => {
+    imgW = imgEl.naturalWidth;
+    imgH = imgEl.naturalHeight;
+    container.style.display = 'inline-block';
+    clicks = [];
+    clearMarkers();
+    updateProgress();
+    resetBtn.disabled = false;
+  };
+});
+
+container.addEventListener('click', (e) => {
+  if (clicks.length >= CLICK_PROMPTS.length) return;
+
+  const rect = imgEl.getBoundingClientRect();
+  const scaleX = imgW / rect.width;
+  const scaleY = imgH / rect.height;
+  const px = (e.clientX - rect.left) * scaleX;
+  const py = (e.clientY - rect.top) * scaleY;
+
+  clicks.push({ x: px, y: py, key: CLICK_PROMPTS[clicks.length].key });
+
+  // Add visual marker
+  const marker = document.createElement('div');
+  marker.className = 'marker done';
+  marker.style.left = (e.clientX - rect.left) + 'px';
+  marker.style.top = (e.clientY - rect.top) + 'px';
+  container.appendChild(marker);
+  markers.push(marker);
+
+  undoBtn.disabled = false;
+  updateProgress();
+
+  if (clicks.length === CLICK_PROMPTS.length) {
+    computeSchema();
+  }
+});
+
+undoBtn.addEventListener('click', () => {
+  if (clicks.length === 0) return;
+  clicks.pop();
+  const m = markers.pop();
+  if (m) m.remove();
+  undoBtn.disabled = clicks.length === 0;
+  outputEl.style.display = 'none';
+  updateProgress();
+});
+
+resetBtn.addEventListener('click', () => {
+  clicks = [];
+  clearMarkers();
+  outputEl.style.display = 'none';
+  updateProgress();
+});
+
+function clearMarkers() {
+  markers.forEach(m => m.remove());
+  markers = [];
+  undoBtn.disabled = true;
+}
+
+function updateProgress() {
+  if (clicks.length >= CLICK_PROMPTS.length) {
+    progressEl.innerHTML = '<strong style="color:#4caf50">All points captured! See results below.</strong>';
+  } else {
+    const prompt = CLICK_PROMPTS[clicks.length];
+    progressEl.innerHTML = `<strong>Click ${clicks.length + 1}/${CLICK_PROMPTS.length}:</strong> ${prompt.label}`;
+  }
+}
+
+function get(key) {
+  return clicks.find(c => c.key === key);
+}
+
+function computeSchema() {
+  const first = get('firstBox_tl');
+  const second = get('secondBox_tl');
+  const firstBR = get('firstBox_br');
+  const col2 = get('col2_tl');
+  const row2 = get('row2_tl');
+  const row3 = get('row3_tl');
+  const decimal = get('decimalBox_tl');
+  const trackTL = get('tracking_tl');
+  const trackBR = get('tracking_br');
+
+  // Box dimensions (normalized)
+  const boxW = (firstBR.x - first.x) / imgW;
+  const boxH = (firstBR.y - first.y) / imgH;
+
+  // Digit stride (between consecutive boxes in same field)
+  const digitStride = (second.x - first.x) / imgW;
+
+  // Column stride (between same digit position in adjacent columns)
+  const colStride = (col2.x - first.x) / imgW;
+
+  // Row positions
+  const row1Y = first.y / imgH;
+  const row2Y = row2.y / imgH;
+  const row3Y = row3.y / imgH;
+
+  // First column x
+  const col1X = first.x / imgW;
+
+  // Decimal stride (distance from 3rd box to 4th box, which crosses the comma)
+  // decimal box is the 4th box (index 3), so stride from box 2 (index 2) to box 3 (index 3)
+  // box 2 top-left = first.x + 2*digitStride*imgW
+  const box3X = first.x + 2 * digitStride * imgW;
+  const decimalStride = (decimal.x - box3X) / imgW;
+
+  // Column x positions
+  const colXPositions = [];
+  for (let i = 0; i < 14; i++) {
+    colXPositions.push(col1X + i * colStride);
+  }
+
+  // Tracking box
+  const trackX = trackTL.x / imgW;
+  const trackY = trackTL.y / imgH;
+  const trackW = (trackBR.x - trackTL.x) / imgW;
+  const trackH = (trackBR.y - trackTL.y) / imgH;
+
+  const result = {
+    imageSize: `${imgW} x ${imgH}`,
+    boxW: boxW.toFixed(6),
+    boxH: boxH.toFixed(6),
+    digitStride: digitStride.toFixed(6),
+    decimalStride: decimalStride.toFixed(6),
+    colStride: colStride.toFixed(6),
+    col1X: col1X.toFixed(6),
+    row1Y: row1Y.toFixed(6),
+    row2Y: row2Y.toFixed(6),
+    row3Y: row3Y.toFixed(6),
+    tracking: { x: trackX.toFixed(6), y: trackY.toFixed(6), w: trackW.toFixed(6), h: trackH.toFixed(6) },
+    COL_X: colXPositions.map(v => v.toFixed(4)),
+  };
+
+  // Generate code snippet
+  const code = `// --- Measured from rectified image (${imgW}x${imgH}) ---
+
+// Column x positions (first digit box in each column)
+const COL_X: number[] = [
+  ${colXPositions.map(v => v.toFixed(4)).join(', ')},
+];
+
+// Row y positions
+const ROW_Y: number[] = [${row1Y.toFixed(4)}, ${row2Y.toFixed(4)}, ${row3Y.toFixed(4)}];
+
+// Digit box dimensions (uniform for all boxes)
+const BOX_W = ${boxW.toFixed(4)};
+const BOX_H = ${boxH.toFixed(4)};
+
+// Stride between consecutive digit boxes
+const DIGIT_STRIDE = ${digitStride.toFixed(4)};
+
+// Stride across the decimal separator
+const DECIMAL_STRIDE = ${decimalStride.toFixed(4)};
+
+// Tracking box
+tracking: {
+  id: 'tracking_no',
+  row: 'tracking',
+  col: 'tracking_no',
+  x: ${trackX.toFixed(4)},
+  y: ${trackY.toFixed(4)},
+  w: ${trackW.toFixed(4)},
+  h: ${trackH.toFixed(4)},
+},`;
+
+  outputEl.textContent = code;
+  outputEl.style.display = 'block';
+}
+
+updateProgress();
+</script>
+</body>
+</html>
